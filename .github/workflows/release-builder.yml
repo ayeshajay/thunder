@@ -332,8 +332,8 @@ jobs:
       - name: 📦 Package and Push Helm Chart to GHCR
         run: |
           CHART_NAME="thunder"
-          REPO_NAME=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          HELM_REGISTRY="ghcr.io/${REPO_NAME}"
+          OWNER_NAME=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          HELM_REGISTRY="ghcr.io/${OWNER_NAME}"
           
           # Get version without 'v' prefix for Helm chart version
           CHART_VERSION="${{ github.event.inputs.version }}"
