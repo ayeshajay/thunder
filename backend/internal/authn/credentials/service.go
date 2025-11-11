@@ -23,9 +23,7 @@ import (
 	"github.com/asgardeo/thunder/internal/authn/common"
 	"github.com/asgardeo/thunder/internal/system/error/serviceerror"
 	"github.com/asgardeo/thunder/internal/system/log"
-	userconst "github.com/asgardeo/thunder/internal/user/constants"
-	usermodel "github.com/asgardeo/thunder/internal/user/model"
-	userservice "github.com/asgardeo/thunder/internal/user/service"
+	"github.com/asgardeo/thunder/internal/user"
 )
 
 const (
@@ -34,28 +32,37 @@ const (
 
 // CredentialsAuthnServiceInterface defines the contract for credentials-based authenticator services.
 type CredentialsAuthnServiceInterface interface {
-	Authenticate(attributes map[string]interface{}) (*usermodel.User, *serviceerror.ServiceError)
+	Authenticate(attributes map[string]interface{}) (*user.User, *serviceerror.ServiceError)
 }
 
 // credentialsAuthnService is the default implementation of CredentialsAuthnServiceInterface.
 type credentialsAuthnService struct {
-	userService userservice.UserServiceInterface
+	userService user.UserServiceInterface
+}
+
+// newCredentialsAuthnService creates a new instance of credentials authenticator service.
+func newCredentialsAuthnService(userSvc user.UserServiceInterface) CredentialsAuthnServiceInterface {
+	service := &credentialsAuthnService{
+		userService: userSvc,
+	}
+	common.RegisterAuthenticator(service.getMetadata())
+
+	return service
 }
 
 // NewCredentialsAuthnService creates a new instance of credentials authenticator service.
-func NewCredentialsAuthnService(userSvc userservice.UserServiceInterface) CredentialsAuthnServiceInterface {
+// [Deprecated: use dependency injection to get the instance instead].
+// TODO: Should be removed when executors are migrated to di pattern.
+func NewCredentialsAuthnService(userSvc user.UserServiceInterface) CredentialsAuthnServiceInterface {
 	if userSvc == nil {
-		userSvc = userservice.GetUserService()
+		userSvc = user.GetUserService()
 	}
-
-	return &credentialsAuthnService{
-		userService: userSvc,
-	}
+	return newCredentialsAuthnService(userSvc)
 }
 
 // Authenticate authenticates a user using credentials.
 func (c *credentialsAuthnService) Authenticate(attributes map[string]interface{}) (
-	*usermodel.User, *serviceerror.ServiceError) {
+	*user.User, *serviceerror.ServiceError) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, loggerComponentName))
 	logger.Debug("Authenticating user with credentials")
 
@@ -63,14 +70,14 @@ func (c *credentialsAuthnService) Authenticate(attributes map[string]interface{}
 		return nil, &ErrorEmptyAttributesOrCredentials
 	}
 
-	authRequest := usermodel.AuthenticateUserRequest(attributes)
+	authRequest := user.AuthenticateUserRequest(attributes)
 	authResponse, svcErr := c.userService.AuthenticateUser(authRequest)
 	if svcErr != nil {
 		if svcErr.Type == serviceerror.ClientErrorType {
 			switch svcErr.Code {
-			case userconst.ErrorUserNotFound.Code:
+			case user.ErrorUserNotFound.Code:
 				return nil, &common.ErrorUserNotFound
-			case userconst.ErrorAuthenticationFailed.Code:
+			case user.ErrorAuthenticationFailed.Code:
 				return nil, &ErrorInvalidCredentials
 			default:
 				return nil, serviceerror.CustomServiceError(
@@ -97,4 +104,12 @@ func (c *credentialsAuthnService) Authenticate(attributes map[string]interface{}
 	}
 
 	return user, nil
+}
+
+// getMetadata returns the authenticator metadata for credentials authenticator.
+func (c *credentialsAuthnService) getMetadata() common.AuthenticatorMeta {
+	return common.AuthenticatorMeta{
+		Name:    common.AuthenticatorCredentials,
+		Factors: []common.AuthenticationFactor{common.FactorKnowledge},
+	}
 }

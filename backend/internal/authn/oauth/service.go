@@ -27,12 +27,10 @@ import (
 	"github.com/asgardeo/thunder/internal/idp"
 	oauth2const "github.com/asgardeo/thunder/internal/oauth/oauth2/constants"
 	"github.com/asgardeo/thunder/internal/system/error/serviceerror"
-	httpservice "github.com/asgardeo/thunder/internal/system/http"
+	syshttp "github.com/asgardeo/thunder/internal/system/http"
 	"github.com/asgardeo/thunder/internal/system/log"
 	sysutils "github.com/asgardeo/thunder/internal/system/utils"
-	userconst "github.com/asgardeo/thunder/internal/user/constants"
-	usermodel "github.com/asgardeo/thunder/internal/user/model"
-	userservice "github.com/asgardeo/thunder/internal/user/service"
+	"github.com/asgardeo/thunder/internal/user"
 )
 
 const (
@@ -44,18 +42,13 @@ type OAuthAuthnCoreServiceInterface interface {
 	BuildAuthorizeURL(idpID string) (string, *serviceerror.ServiceError)
 	ExchangeCodeForToken(idpID, code string, validateResponse bool) (*TokenResponse, *serviceerror.ServiceError)
 	FetchUserInfo(idpID, accessToken string) (map[string]interface{}, *serviceerror.ServiceError)
-	GetInternalUser(sub string) (*usermodel.User, *serviceerror.ServiceError)
-}
-
-// OAuthAuthnClientServiceInterface defines the contract for OAuth client operations.
-type OAuthAuthnClientServiceInterface interface {
+	GetInternalUser(sub string) (*user.User, *serviceerror.ServiceError)
 	GetOAuthClientConfig(idpID string) (*OAuthClientConfig, *serviceerror.ServiceError)
 }
 
 // OAuthAuthnServiceInterface defines the contract for OAuth based authenticator services.
 type OAuthAuthnServiceInterface interface {
 	OAuthAuthnCoreServiceInterface
-	OAuthAuthnClientServiceInterface
 	ValidateTokenResponse(idpID string, tokenResp *TokenResponse) *serviceerror.ServiceError
 	FetchUserInfoWithClientConfig(oAuthClientConfig *OAuthClientConfig, accessToken string) (
 		map[string]interface{}, *serviceerror.ServiceError)
@@ -63,28 +56,43 @@ type OAuthAuthnServiceInterface interface {
 
 // oAuthAuthnService is the default implementation of OAuthAuthnServiceInterface.
 type oAuthAuthnService struct {
-	httpClient  httpservice.HTTPClientInterface
+	httpClient  syshttp.HTTPClientInterface
 	idpService  idp.IDPServiceInterface
-	userService userservice.UserServiceInterface
+	userService user.UserServiceInterface
 	endpoints   OAuthEndpoints
 }
 
+// newOAuthAuthnService creates a new instance of OAuth authenticator service.
+func newOAuthAuthnService(httpClient syshttp.HTTPClientInterface,
+	idpSvc idp.IDPServiceInterface, userSvc user.UserServiceInterface,
+	endpoints OAuthEndpoints) OAuthAuthnServiceInterface {
+	service := &oAuthAuthnService{
+		httpClient:  httpClient,
+		idpService:  idpSvc,
+		userService: userSvc,
+		endpoints:   endpoints,
+	}
+	authncm.RegisterAuthenticator(service.getMetadata())
+
+	return service
+}
+
 // NewOAuthAuthnService creates a new instance of OAuth authenticator service.
-func NewOAuthAuthnService(httpClient httpservice.HTTPClientInterface,
-	idpSvc idp.IDPServiceInterface, endpoints OAuthEndpoints) OAuthAuthnServiceInterface {
+// [Deprecated: use dependency injection to get the instance instead].
+// TODO: Should be removed when executors are migrated to di pattern.
+func NewOAuthAuthnService(httpClient syshttp.HTTPClientInterface,
+	idpSvc idp.IDPServiceInterface, userSvc user.UserServiceInterface,
+	endpoints OAuthEndpoints) OAuthAuthnServiceInterface {
 	if httpClient == nil {
-		httpClient = httpservice.NewHTTPClientWithTimeout(authncm.DefaultHTTPTimeout)
+		httpClient = syshttp.NewHTTPClient()
 	}
 	if idpSvc == nil {
 		idpSvc = idp.NewIDPService()
 	}
-
-	return &oAuthAuthnService{
-		httpClient:  httpClient,
-		idpService:  idpSvc,
-		userService: userservice.GetUserService(),
-		endpoints:   endpoints,
+	if userSvc == nil {
+		userSvc = user.GetUserService()
 	}
+	return newOAuthAuthnService(httpClient, idpSvc, userSvc, endpoints)
 }
 
 // GetOAuthClientConfig retrieves and validates the OAuth client configuration for the given identity provider ID.
@@ -257,7 +265,7 @@ func (s *oAuthAuthnService) FetchUserInfoWithClientConfig(oAuthClientConfig *OAu
 }
 
 // GetInternalUser retrieves the internal user based on the external subject identifier.
-func (s *oAuthAuthnService) GetInternalUser(sub string) (*usermodel.User, *serviceerror.ServiceError) {
+func (s *oAuthAuthnService) GetInternalUser(sub string) (*user.User, *serviceerror.ServiceError) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, loggerComponentName),
 		log.String("sub", log.MaskString(sub)))
 	logger.Debug("Retrieving internal user for the given sub claim")
@@ -271,7 +279,7 @@ func (s *oAuthAuthnService) GetInternalUser(sub string) (*usermodel.User, *servi
 	}
 	userID, svcErr := s.userService.IdentifyUser(filters)
 	if svcErr != nil {
-		if svcErr.Code == userconst.ErrorUserNotFound.Code {
+		if svcErr.Code == user.ErrorUserNotFound.Code {
 			logger.Debug("No user found for the provided sub claim")
 			return nil, &common.ErrorUserNotFound
 		}
@@ -334,4 +342,13 @@ func (s *oAuthAuthnService) validateClientConfig(idpConfig *OAuthClientConfig) *
 	}
 
 	return nil
+}
+
+// getMetadata returns the authenticator metadata for OAuth authenticator.
+func (s *oAuthAuthnService) getMetadata() authncm.AuthenticatorMeta {
+	return authncm.AuthenticatorMeta{
+		Name:          authncm.AuthenticatorOAuth,
+		Factors:       []authncm.AuthenticationFactor{authncm.FactorKnowledge},
+		AssociatedIDP: idp.IDPTypeOAuth,
+	}
 }

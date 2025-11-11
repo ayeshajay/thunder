@@ -25,9 +25,11 @@
         {
             "id": "google_auth",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "idpId": "<google-idp-id>"
+            },
             "executor": {
-                "name": "GoogleOIDCAuthExecutor",
-                "idpName": "Google"
+                "name": "GoogleOIDCAuthExecutor"
             },
             "next": [
                 "provisioning_social"
@@ -36,9 +38,11 @@
         {
             "id": "github_auth",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "idpId": "<github-idp-id>"
+            },
             "executor": {
-                "name": "GithubOAuthExecutor",
-                "idpName": "Github"
+                "name": "GithubOAuthExecutor"
             },
             "next": [
                 "provisioning_social"
@@ -61,11 +65,11 @@
         {
             "id": "sms_otp_auth",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "senderId": "<your-sender-id>"
+            },
             "executor": {
-                "name": "SMSOTPAuthExecutor",
-                "properties": {
-                    "senderId": "<your-sender-id>"
-                }
+                "name": "SMSOTPAuthExecutor"
             },
             "next": [
                 "provisioning_local_sms"
@@ -74,11 +78,11 @@
         {
             "id": "sms_otp_auth_basic",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "senderId": "<your-sender-id>"
+            },
             "executor": {
-                "name": "SMSOTPAuthExecutor",
-                "properties": {
-                    "senderId": "<your-sender-id>"
-                }
+                "name": "SMSOTPAuthExecutor"
             },
             "next": [
                 "provisioning_local_basic"
@@ -114,6 +118,10 @@
                     "required": false
                 }
             ],
+            "properties": {
+                "ouId": "<default-ou-id>",
+                "userType": "<default-user-type>"
+            },
             "executor": {
                 "name": "ProvisioningExecutor"
             },
@@ -141,6 +149,10 @@
                     "required": true
                 }
             ],
+            "properties": {
+                "ouId": "<default-ou-id>",
+                "userType": "<default-user-type>"
+            },
             "executor": {
                 "name": "ProvisioningExecutor"
             },
@@ -151,6 +163,10 @@
         {
             "id": "provisioning_social",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "ouId": "<default-ou-id>",
+                "userType": "<default-user-type>"
+            },
             "executor": {
                 "name": "ProvisioningExecutor"
             },

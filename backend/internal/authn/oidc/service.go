@@ -23,11 +23,14 @@ import (
 	"slices"
 	"strings"
 
+	authncm "github.com/asgardeo/thunder/internal/authn/common"
 	authnoauth "github.com/asgardeo/thunder/internal/authn/oauth"
+	"github.com/asgardeo/thunder/internal/idp"
 	"github.com/asgardeo/thunder/internal/system/error/serviceerror"
+	httpservice "github.com/asgardeo/thunder/internal/system/http"
 	"github.com/asgardeo/thunder/internal/system/jwt"
 	"github.com/asgardeo/thunder/internal/system/log"
-	usermodel "github.com/asgardeo/thunder/internal/user/model"
+	"github.com/asgardeo/thunder/internal/user"
 )
 
 const (
@@ -44,7 +47,6 @@ type OIDCAuthnCoreServiceInterface interface {
 // OIDCAuthnServiceInterface defines the contract for OIDC based authenticator services.
 type OIDCAuthnServiceInterface interface {
 	OIDCAuthnCoreServiceInterface
-	authnoauth.OAuthAuthnClientServiceInterface
 	ValidateTokenResponse(idpID string, tokenResp *authnoauth.TokenResponse,
 		validateIDToken bool) *serviceerror.ServiceError
 }
@@ -55,20 +57,40 @@ type oidcAuthnService struct {
 	jwtService jwt.JWTServiceInterface
 }
 
+// newOIDCAuthnService creates a new instance of OIDC authenticator service.
+func newOIDCAuthnService(httpClient httpservice.HTTPClientInterface,
+	idpSvc idp.IDPServiceInterface, userSvc user.UserServiceInterface,
+	jwtSvc jwt.JWTServiceInterface, endpoints authnoauth.OAuthEndpoints) OIDCAuthnServiceInterface {
+	internal := authnoauth.NewOAuthAuthnService(httpClient, idpSvc, userSvc, endpoints)
+
+	service := &oidcAuthnService{
+		internal:   internal,
+		jwtService: jwtSvc,
+	}
+	authncm.RegisterAuthenticator(service.getMetadata())
+
+	return service
+}
+
 // NewOIDCAuthnService creates a new instance of OIDC authenticator service.
-func NewOIDCAuthnService(oauthSvc authnoauth.OAuthAuthnServiceInterface,
-	jwtSvc jwt.JWTServiceInterface) OIDCAuthnServiceInterface {
-	if oauthSvc == nil {
-		oauthSvc = authnoauth.NewOAuthAuthnService(nil, nil, authnoauth.OAuthEndpoints{})
+// [Deprecated: use dependency injection to get the instance instead].
+// TODO: Should be removed when executors are migrated to di pattern.
+func NewOIDCAuthnService(httpClient httpservice.HTTPClientInterface,
+	idpSvc idp.IDPServiceInterface, userSvc user.UserServiceInterface,
+	jwtSvc jwt.JWTServiceInterface, endpoints authnoauth.OAuthEndpoints) OIDCAuthnServiceInterface {
+	if httpClient == nil {
+		httpClient = httpservice.NewHTTPClient()
+	}
+	if idpSvc == nil {
+		idpSvc = idp.NewIDPService()
+	}
+	if userSvc == nil {
+		userSvc = user.GetUserService()
 	}
 	if jwtSvc == nil {
 		jwtSvc = jwt.GetJWTService()
 	}
-
-	return &oidcAuthnService{
-		internal:   oauthSvc,
-		jwtService: jwtSvc,
-	}
+	return newOIDCAuthnService(httpClient, idpSvc, userSvc, jwtSvc, endpoints)
 }
 
 // GetOAuthClientConfig retrieves and validates the OAuth client configuration for the given identity provider ID.
@@ -209,6 +231,15 @@ func (s *oidcAuthnService) FetchUserInfo(idpID, accessToken string) (
 }
 
 // GetInternalUser retrieves the internal user based on the external subject identifier.
-func (s *oidcAuthnService) GetInternalUser(sub string) (*usermodel.User, *serviceerror.ServiceError) {
+func (s *oidcAuthnService) GetInternalUser(sub string) (*user.User, *serviceerror.ServiceError) {
 	return s.internal.GetInternalUser(sub)
+}
+
+// getMetadata returns the authenticator metadata for OIDC authenticator.
+func (s *oidcAuthnService) getMetadata() authncm.AuthenticatorMeta {
+	return authncm.AuthenticatorMeta{
+		Name:          authncm.AuthenticatorOIDC,
+		Factors:       []authncm.AuthenticationFactor{authncm.FactorKnowledge},
+		AssociatedIDP: idp.IDPTypeOIDC,
+	}
 }

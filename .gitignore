@@ -76,6 +76,8 @@ yarn-error.log*
 # NX artifacts
 frontend/.nx/cache
 frontend/.nx/workspace-data
+frontend/packages/**/.nx/cache
+frontend/packages/**/.nx/workspace-data
 
 # typescript
 *.tsbuildinfo
@@ -105,6 +107,5 @@ backend/coverage_unit.out
 backend/coverage_unit.html
 
 # IDE settings
-settings.json
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md

@@ -6,9 +6,9 @@
   },
   "gate_client": {
     "hostname": "localhost",
-    "port": 9090,
+    "port": 8090,
     "scheme": "https",
-    "login_path": "/login",
+    "login_path": "/signin",
     "error_path": "/error"
   },
   "security": {
@@ -54,11 +54,11 @@
     "cleanup_interval": 300,
     "properties": []
   },
+  "jwt": {
+    "issuer": "thunder",
+    "validity_period": 3600
+  },
   "oauth": {
-    "jwt": {
-      "issuer": "thunder",
-      "validity_period": 3600
-    },
     "refresh_token": {
       "renew_on_grant": false,
       "validity_period": 86400

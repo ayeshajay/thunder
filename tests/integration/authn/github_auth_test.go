@@ -37,11 +37,36 @@ const (
 	mockGithubPort   = 8091
 )
 
+var githubUserSchema = testutils.UserSchema{
+	Name: "github_user",
+	Schema: map[string]interface{}{
+		"username": map[string]interface{}{
+			"type": "string",
+		},
+		"password": map[string]interface{}{
+			"type": "string",
+		},
+		"sub": map[string]interface{}{
+			"type": "string",
+		},
+		"email": map[string]interface{}{
+			"type": "string",
+		},
+		"givenName": map[string]interface{}{
+			"type": "string",
+		},
+		"familyName": map[string]interface{}{
+			"type": "string",
+		},
+	},
+}
+
 type GithubAuthTestSuite struct {
 	suite.Suite
 	mockGithubServer *testutils.MockGithubOAuthServer
 	idpID            string
 	userID           string
+	userSchemaID     string
 }
 
 func TestGithubAuthTestSuite(t *testing.T) {
@@ -74,6 +99,10 @@ func (suite *GithubAuthTestSuite) SetupSuite() {
 	err := suite.mockGithubServer.Start()
 	suite.Require().NoError(err, "Failed to start mock GitHub server")
 
+	schemaID, err := testutils.CreateUserType(githubUserSchema)
+	suite.Require().NoError(err, "Failed to create GitHub user schema")
+	suite.userSchemaID = schemaID
+
 	userAttributes := map[string]interface{}{
 		"username":   "githubuser",
 		"password":   "Test@1234",
@@ -87,7 +116,7 @@ func (suite *GithubAuthTestSuite) SetupSuite() {
 	suite.Require().NoError(err)
 
 	user := testutils.User{
-		Type:             "person",
+		Type:             githubUserSchema.Name,
 		OrganizationUnit: "root",
 		Attributes:       json.RawMessage(attributesJSON),
 	}
@@ -147,6 +176,10 @@ func (suite *GithubAuthTestSuite) SetupSuite() {
 func (suite *GithubAuthTestSuite) TearDownSuite() {
 	if suite.userID != "" {
 		_ = testutils.DeleteUser(suite.userID)
+	}
+
+	if suite.userSchemaID != "" {
+		_ = testutils.DeleteUserType(suite.userSchemaID)
 	}
 
 	if suite.idpID != "" {
@@ -289,6 +322,7 @@ func (suite *GithubAuthTestSuite) TestGithubAuthCompleteFlowSuccess() {
 	suite.NotEmpty(authResponse.Type, "Response should contain user type")
 	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
 	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
 }
 
 func (suite *GithubAuthTestSuite) TestGithubAuthFinishInvalidSessionToken() {
@@ -328,6 +362,186 @@ func (suite *GithubAuthTestSuite) TestGithubAuthFinishMissingCode() {
 	defer resp.Body.Close()
 
 	suite.Equal(http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestGithubAuthCompleteFlowWithSkipAssertionFalse tests complete GitHub auth flow with skip_assertion=false
+func (suite *GithubAuthTestSuite) TestGithubAuthCompleteFlowWithSkipAssertionFalse() {
+	// Step 1: Start authentication
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+githubAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	redirectURL := startResponse["redirect_url"].(string)
+
+	// Step 2: Simulate user authorization at GitHub
+	authCode := suite.simulateGithubAuthorization(redirectURL)
+	suite.Require().NotEmpty(authCode)
+
+	// Step 3: Finish authentication with skip_assertion=false
+	finishRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           authCode,
+		"skip_assertion": false,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+githubAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token when skip_assertion is false")
+}
+
+// TestGithubAuthCompleteFlowWithSkipAssertionTrue tests complete GitHub auth flow with skip_assertion=true
+func (suite *GithubAuthTestSuite) TestGithubAuthCompleteFlowWithSkipAssertionTrue() {
+	// Step 1: Start authentication
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+githubAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	redirectURL := startResponse["redirect_url"].(string)
+
+	// Step 2: Simulate user authorization at GitHub
+	authCode := suite.simulateGithubAuthorization(redirectURL)
+	suite.Require().NotEmpty(authCode)
+
+	// Step 3: Finish authentication with skip_assertion=true
+	finishRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           authCode,
+		"skip_assertion": true,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+githubAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.Empty(authResponse.Assertion, "Response should not contain assertion token when skip_assertion is true")
+}
+
+// TestGithubAuthWithAssuranceLevelAAL1 tests that GitHub authentication generates AAL1 assurance level
+func (suite *GithubAuthTestSuite) TestGithubAuthWithAssuranceLevelAAL1() {
+	// Step 1: Start authentication
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+githubAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	authCode := suite.simulateGithubAuthorization(startResponse["redirect_url"].(string))
+
+	// Step 2: Finish authentication
+	finishRequest := map[string]interface{}{
+		"session_token": sessionToken,
+		"code":          authCode,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+githubAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
+
+	// Verify assertion contains AAL1 for single-factor GitHub authentication
+	aal := extractAssuranceLevelFromAssertion(authResponse.Assertion, "aal")
+	suite.NotEmpty(aal, "Assertion should contain AAL information")
+	suite.Equal("AAL1", aal, "Single-factor GitHub authentication should result in AAL1")
+
+	// Verify IAL is present
+	ial := extractAssuranceLevelFromAssertion(authResponse.Assertion, "ial")
+	suite.NotEmpty(ial, "Assertion should contain IAL information")
+	suite.Equal("IAL1", ial, "Self-asserted identity should result in IAL1")
 }
 
 // simulateGithubAuthorization simulates user authorization and returns authorization code

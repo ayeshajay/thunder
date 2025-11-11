@@ -38,11 +38,36 @@ const (
 	mockGooglePort   = 8090
 )
 
+var googleUserSchema = testutils.UserSchema{
+	Name: "google_user",
+	Schema: map[string]interface{}{
+		"username": map[string]interface{}{
+			"type": "string",
+		},
+		"password": map[string]interface{}{
+			"type": "string",
+		},
+		"sub": map[string]interface{}{
+			"type": "string",
+		},
+		"email": map[string]interface{}{
+			"type": "string",
+		},
+		"givenName": map[string]interface{}{
+			"type": "string",
+		},
+		"familyName": map[string]interface{}{
+			"type": "string",
+		},
+	},
+}
+
 type GoogleAuthTestSuite struct {
 	suite.Suite
 	mockGoogleServer *testutils.MockGoogleOIDCServer
 	idpID            string
 	userID           string
+	userSchemaID     string
 }
 
 func TestGoogleAuthTestSuite(t *testing.T) {
@@ -69,6 +94,10 @@ func (suite *GoogleAuthTestSuite) SetupSuite() {
 	err = suite.mockGoogleServer.Start()
 	suite.Require().NoError(err, "Failed to start mock Google server")
 
+	schemaID, err := testutils.CreateUserType(googleUserSchema)
+	suite.Require().NoError(err, "Failed to create Google user schema")
+	suite.userSchemaID = schemaID
+
 	userAttributes := map[string]interface{}{
 		"username":   "googleuser",
 		"password":   "Test@1234",
@@ -82,7 +111,7 @@ func (suite *GoogleAuthTestSuite) SetupSuite() {
 	suite.Require().NoError(err)
 
 	user := testutils.User{
-		Type:             "person",
+		Type:             googleUserSchema.Name,
 		OrganizationUnit: "root",
 		Attributes:       json.RawMessage(attributesJSON),
 	}
@@ -147,6 +176,10 @@ func (suite *GoogleAuthTestSuite) SetupSuite() {
 func (suite *GoogleAuthTestSuite) TearDownSuite() {
 	if suite.userID != "" {
 		_ = testutils.DeleteUser(suite.userID)
+	}
+
+	if suite.userSchemaID != "" {
+		_ = testutils.DeleteUserType(suite.userSchemaID)
 	}
 
 	if suite.idpID != "" {
@@ -285,6 +318,7 @@ func (suite *GoogleAuthTestSuite) TestGoogleAuthCompleteFlowSuccess() {
 	suite.NotEmpty(authResponse.Type, "Response should contain user type")
 	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
 	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
 }
 
 func (suite *GoogleAuthTestSuite) TestGoogleAuthFinishInvalidSessionToken() {
@@ -326,6 +360,122 @@ func (suite *GoogleAuthTestSuite) TestGoogleAuthFinishMissingCode() {
 	suite.Equal(http.StatusBadRequest, resp.StatusCode)
 }
 
+// TestGoogleAuthCompleteFlowWithSkipAssertionFalse tests complete Google auth flow with skip_assertion=false
+func (suite *GoogleAuthTestSuite) TestGoogleAuthCompleteFlowWithSkipAssertionFalse() {
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+googleAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	redirectURL := startResponse["redirect_url"].(string)
+
+	authCode := suite.simulateGoogleAuthorization(redirectURL)
+	suite.Require().NotEmpty(authCode)
+
+	finishRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           authCode,
+		"skip_assertion": false,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+googleAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token when skip_assertion is false")
+}
+
+// TestGoogleAuthCompleteFlowWithSkipAssertionTrue tests complete Google auth flow with skip_assertion=true
+func (suite *GoogleAuthTestSuite) TestGoogleAuthCompleteFlowWithSkipAssertionTrue() {
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+googleAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	redirectURL := startResponse["redirect_url"].(string)
+
+	authCode := suite.simulateGoogleAuthorization(redirectURL)
+	suite.Require().NotEmpty(authCode)
+
+	finishRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           authCode,
+		"skip_assertion": true,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+googleAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.Empty(authResponse.Assertion, "Response should not contain assertion token when skip_assertion is true")
+}
+
 // simulateGoogleAuthorization simulates user authorization and returns authorization code
 func (suite *GoogleAuthTestSuite) simulateGoogleAuthorization(redirectURL string) string {
 	parsedURL, err := url.Parse(redirectURL)
@@ -365,6 +515,120 @@ func (suite *GoogleAuthTestSuite) simulateGoogleAuthorization(redirectURL string
 
 	code := locationURL.Query().Get("code")
 	return code
+}
+
+// TestGoogleAuthWithAssuranceLevelAAL1 tests that Google authentication generates AAL1 assurance level
+func (suite *GoogleAuthTestSuite) TestGoogleAuthWithAssuranceLevelAAL1() {
+	// Step 1: Start Google authentication
+	startReq := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startReqJSON, err := json.Marshal(startReq)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+googleAuthStart, bytes.NewReader(startReqJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var startResp map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResp)
+	suite.Require().NoError(err)
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	sessionToken := startResp["session_token"].(string)
+	suite.NotEmpty(sessionToken)
+
+	// Step 2: Get authorization code from mock server
+	code := suite.simulateGoogleAuthorization(startResp["redirect_url"].(string))
+	suite.NotEmpty(code)
+
+	// Step 3: Finish Google authentication
+	finishReq := map[string]interface{}{
+		"session_token": sessionToken,
+		"code":          code,
+	}
+	finishReqJSON, err := json.Marshal(finishReq)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+googleAuthFinish, bytes.NewReader(finishReqJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var authResp testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResp)
+	suite.Require().NoError(err)
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	suite.NotEmpty(authResp.Assertion, "Response should contain assertion token by default")
+
+	// Verify assertion contains AAL1 for single-factor Google authentication
+	aal := extractAssuranceLevelFromAssertion(authResp.Assertion, "aal")
+	suite.NotEmpty(aal, "Assertion should contain AAL information")
+	suite.Equal("AAL1", aal, "Single-factor Google authentication should result in AAL1")
+
+	// Verify IAL is present
+	ial := extractAssuranceLevelFromAssertion(authResp.Assertion, "ial")
+	suite.NotEmpty(ial, "Assertion should contain IAL information")
+	suite.Equal("IAL1", ial, "Self-asserted identity should result in IAL1")
+}
+
+// TestGoogleAuthWithSkipAssertion tests Google authentication with skip_assertion=true
+func (suite *GoogleAuthTestSuite) TestGoogleAuthWithSkipAssertion() {
+	// Start authentication
+	startReq := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startReqJSON, err := json.Marshal(startReq)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+googleAuthStart, bytes.NewReader(startReqJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var startResp map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResp)
+	suite.Require().NoError(err)
+
+	sessionToken := startResp["session_token"].(string)
+	code := suite.simulateGoogleAuthorization(startResp["redirect_url"].(string))
+
+	// Finish with skip_assertion=true
+	finishReq := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           code,
+		"skip_assertion": true,
+	}
+	finishReqJSON, err := json.Marshal(finishReq)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+googleAuthFinish, bytes.NewReader(finishReqJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var authResp testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResp)
+	suite.Require().NoError(err)
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	suite.Empty(authResp.Assertion, "Response should not contain assertion when skip_assertion is true")
 }
 
 // getHTTPClient returns a configured HTTP client

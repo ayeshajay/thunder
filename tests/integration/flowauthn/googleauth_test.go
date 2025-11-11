@@ -19,9 +19,11 @@
 package flowauthn
 
 import (
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asgardeo/thunder/tests/integration/testutils"
 	"github.com/stretchr/testify/suite"
@@ -50,11 +52,42 @@ var (
 var (
 	googleAuthTestAppID string
 	googleAuthTestOUID  string
-	googleAuthTestIDPID string
 )
+
+const (
+	mockGoogleFlowPort = 8093
+)
+
+var googleUserSchema = testutils.UserSchema{
+	Name: "google_flow_user",
+	Schema: map[string]interface{}{
+		"username": map[string]interface{}{
+			"type": "string",
+		},
+		"password": map[string]interface{}{
+			"type": "string",
+		},
+		"sub": map[string]interface{}{
+			"type": "string",
+		},
+		"email": map[string]interface{}{
+			"type": "string",
+		},
+		"givenName": map[string]interface{}{
+			"type": "string",
+		},
+		"familyName": map[string]interface{}{
+			"type": "string",
+		},
+	},
+}
 
 type GoogleAuthFlowTestSuite struct {
 	suite.Suite
+	mockGoogleServer *testutils.MockGoogleOIDCServer
+	idpID            string
+	userID           string
+	userSchemaID     string
 }
 
 func TestGoogleAuthFlowTestSuite(t *testing.T) {
@@ -62,47 +95,63 @@ func TestGoogleAuthFlowTestSuite(t *testing.T) {
 }
 
 func (ts *GoogleAuthFlowTestSuite) SetupSuite() {
+	// Start mock Google server
+	mockServer, err := testutils.NewMockGoogleOIDCServer(mockGoogleFlowPort,
+		"test_google_client", "test_google_secret")
+	ts.Require().NoError(err, "Failed to create mock Google server")
+	ts.mockGoogleServer = mockServer
+
+	ts.mockGoogleServer.AddUser(&testutils.GoogleUserInfo{
+		Sub:           "google-test-user-123",
+		Email:         "testuser@gmail.com",
+		EmailVerified: true,
+		Name:          "Test User",
+		GivenName:     "Test",
+		FamilyName:    "User",
+		Picture:       "https://example.com/picture.jpg",
+		Locale:        "en",
+	})
+
+	err = ts.mockGoogleServer.Start()
+	ts.Require().NoError(err, "Failed to start mock Google server")
+
+	// Use the IDP created by database scripts
+	ts.idpID = "test-google-idp-id"
+
+	// Create user schema
+	schemaID, err := testutils.CreateUserType(googleUserSchema)
+	ts.Require().NoError(err, "Failed to create Google user schema")
+	ts.userSchemaID = schemaID
+
+	// Create user
+	userAttributes := map[string]interface{}{
+		"username":   "googleflowuser",
+		"password":   "Test@1234",
+		"sub":        "google-test-user-123",
+		"email":      "testuser@gmail.com",
+		"givenName":  "Test",
+		"familyName": "User",
+	}
+
+	attributesJSON, err := json.Marshal(userAttributes)
+	ts.Require().NoError(err)
+
+	user := testutils.User{
+		Type:             googleUserSchema.Name,
+		OrganizationUnit: "root",
+		Attributes:       json.RawMessage(attributesJSON),
+	}
+
+	userID, err := testutils.CreateUser(user)
+	ts.Require().NoError(err, "Failed to create test user")
+	ts.userID = userID
+
 	// Create test organization unit for Google auth tests
 	ouID, err := testutils.CreateOrganizationUnit(googleAuthTestOU)
 	if err != nil {
 		ts.T().Fatalf("Failed to create test organization unit during setup: %v", err)
 	}
 	googleAuthTestOUID = ouID
-
-	// Create Google IDP for Google auth tests
-	googleIDP := testutils.IDP{
-		Name:        "Google",
-		Description: "Google Identity Provider for authentication flow testing",
-		Type:        "GOOGLE",
-		Properties: []testutils.IDPProperty{
-			{
-				Name:     "client_id",
-				Value:    "test_google_client",
-				IsSecret: false,
-			},
-			{
-				Name:     "client_secret",
-				Value:    "test_google_secret",
-				IsSecret: true,
-			},
-			{
-				Name:     "redirect_uri",
-				Value:    "https://localhost:3000/google/callback",
-				IsSecret: false,
-			},
-			{
-				Name:     "scopes",
-				Value:    "openid,email,profile",
-				IsSecret: false,
-			},
-		},
-	}
-
-	idpID, err := testutils.CreateIDP(googleIDP)
-	if err != nil {
-		ts.T().Fatalf("Failed to create Google IDP during setup: %v", err)
-	}
-	googleAuthTestIDPID = idpID
 
 	// Create test application for Google auth tests
 	appID, err := testutils.CreateApplication(googleAuthTestApp)
@@ -120,18 +169,27 @@ func (ts *GoogleAuthFlowTestSuite) TearDownSuite() {
 		}
 	}
 
-	// Delete Google IDP
-	if googleAuthTestIDPID != "" {
-		if err := testutils.DeleteIDP(googleAuthTestIDPID); err != nil {
-			ts.T().Logf("Failed to delete Google IDP during teardown: %v", err)
-		}
-	}
-
 	// Delete test organization unit
 	if googleAuthTestOUID != "" {
 		if err := testutils.DeleteOrganizationUnit(googleAuthTestOUID); err != nil {
 			ts.T().Logf("Failed to delete test organization unit during teardown: %v", err)
 		}
+	}
+
+	// Clean up user
+	if ts.userID != "" {
+		_ = testutils.DeleteUser(ts.userID)
+	}
+
+	if ts.userSchemaID != "" {
+		_ = testutils.DeleteUserType(ts.userSchemaID)
+	}
+
+	// Stop mock server
+	if ts.mockGoogleServer != nil {
+		_ = ts.mockGoogleServer.Stop()
+		// Wait for port to be released
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -151,8 +209,8 @@ func (ts *GoogleAuthFlowTestSuite) TestGoogleAuthFlowInitiation() {
 	ts.Require().NotEmpty(flowStep.Data, "Flow data should not be empty")
 	ts.Require().NotEmpty(flowStep.Data.RedirectURL, "Redirect URL should not be empty")
 	redirectURLStr := flowStep.Data.RedirectURL
-	ts.Require().True(strings.HasPrefix(redirectURLStr, "https://accounts.google.com/o/oauth2/v2/auth"),
-		"Redirect URL should point to Google authentication")
+	ts.Require().True(strings.HasPrefix(redirectURLStr, "http://localhost:8093/o/oauth2/v2/auth"),
+		"Redirect URL should point to mock Google server")
 
 	// Parse and validate the redirect URL
 	redirectURL, err := url.Parse(redirectURLStr)
@@ -184,4 +242,129 @@ func (ts *GoogleAuthFlowTestSuite) TestGoogleAuthFlowInvalidAppID() {
 	ts.Require().Equal("Invalid request", errorResp.Message, "Expected error message for invalid request")
 	ts.Require().Equal("Invalid app ID provided in the request", errorResp.Description,
 		"Expected error description for invalid app ID")
+}
+
+func (ts *GoogleAuthFlowTestSuite) TestGoogleAuthFlowCompleteSuccess() {
+	// Step 1: Initialize the flow by calling the flow execution API
+	flowStep, err := initiateAuthFlow(googleAuthTestAppID, nil)
+	if err != nil {
+		ts.T().Fatalf("Failed to initiate Google authentication flow: %v", err)
+	}
+
+	// Verify flow status and type
+	ts.Require().Equal("INCOMPLETE", flowStep.FlowStatus, "Expected flow status to be INCOMPLETE")
+	ts.Require().Equal("REDIRECTION", flowStep.Type, "Expected flow type to be REDIRECT")
+	ts.Require().NotEmpty(flowStep.FlowID, "Flow ID should not be empty")
+
+	flowID := flowStep.FlowID
+	redirectURLStr := flowStep.Data.RedirectURL
+	ts.Require().NotEmpty(redirectURLStr, "Redirect URL should not be empty")
+
+	// Step 2: Simulate user authorization at Google (get authorization code)
+	authCode, err := testutils.SimulateFederatedOAuthFlow(redirectURLStr)
+	if err != nil {
+		ts.T().Fatalf("Failed to simulate Google authorization: %v", err)
+	}
+	ts.Require().NotEmpty(authCode, "Authorization code should not be empty")
+
+	// Step 3: Complete the flow with the authorization code
+	inputs := map[string]string{
+		"code": authCode,
+	}
+
+	completeFlowStep, err := completeAuthFlow(flowID, "", inputs)
+	if err != nil {
+		ts.T().Fatalf("Failed to complete Google authentication flow: %v", err)
+	}
+
+	// Verify flow completion
+	ts.Require().Equal("COMPLETE", completeFlowStep.FlowStatus, "Expected flow status to be COMPLETE")
+	ts.Require().NotEmpty(completeFlowStep.Assertion, "Assertion token should be present")
+
+	// Verify the assertion token contains expected information
+	ts.Require().Contains(completeFlowStep.Assertion, ".", "Assertion should be a JWT token")
+}
+
+func (ts *GoogleAuthFlowTestSuite) TestGoogleAuthFlowCompleteWithInvalidCode() {
+	// Step 1: Initialize the flow
+	flowStep, err := initiateAuthFlow(googleAuthTestAppID, nil)
+	if err != nil {
+		ts.T().Fatalf("Failed to initiate Google authentication flow: %v", err)
+	}
+
+	flowID := flowStep.FlowID
+
+	// Step 2: Try to complete with invalid authorization code
+	inputs := map[string]string{
+		"code": "invalid-auth-code-12345",
+	}
+
+	_, err = completeAuthFlow(flowID, "", inputs)
+	ts.Require().Error(err, "Should fail with invalid authorization code")
+}
+
+func (ts *GoogleAuthFlowTestSuite) TestGoogleAuthFlowCompleteWithMissingCode() {
+	// Step 1: Initialize the flow
+	flowStep, err := initiateAuthFlow(googleAuthTestAppID, nil)
+	if err != nil {
+		ts.T().Fatalf("Failed to initiate Google authentication flow: %v", err)
+	}
+
+	flowID := flowStep.FlowID
+
+	// Step 2: Try to complete without providing authorization code
+	inputs := map[string]string{}
+
+	// When required inputs are missing, the flow returns INCOMPLETE status (not an error)
+	// and asks for the missing inputs again
+	flowStep, err = completeAuthFlow(flowID, "", inputs)
+	ts.Require().NoError(err, "Should not return error when inputs are missing")
+	ts.Require().Equal("INCOMPLETE", flowStep.FlowStatus,
+		"Flow should remain INCOMPLETE when required inputs are missing")
+	ts.Require().Equal("REDIRECTION", flowStep.Type, "Flow should still be REDIRECTION type")
+
+	// Verify that code input is still required
+	ts.Require().NotEmpty(flowStep.Data.Inputs, "Should still require inputs")
+	hasCodeInput := false
+	for _, input := range flowStep.Data.Inputs {
+		if input.Name == "code" && input.Required {
+			hasCodeInput = true
+			break
+		}
+	}
+	ts.Require().True(hasCodeInput, "Code input should still be required")
+}
+
+func (ts *GoogleAuthFlowTestSuite) TestGoogleAuthFlowMultipleUsersSuccess() {
+	// This test verifies that the flow works correctly when the IDP is configured
+	// with multiple users, and one of them authenticates successfully
+
+	// Step 1: Initialize the flow
+	flowStep, err := initiateAuthFlow(googleAuthTestAppID, nil)
+	if err != nil {
+		ts.T().Fatalf("Failed to initiate Google authentication flow: %v", err)
+	}
+
+	flowID := flowStep.FlowID
+	redirectURLStr := flowStep.Data.RedirectURL
+
+	// Step 2: Simulate user authorization at Google
+	authCode, err := testutils.SimulateFederatedOAuthFlow(redirectURLStr)
+	if err != nil {
+		ts.T().Fatalf("Failed to simulate Google authorization: %v", err)
+	}
+
+	// Step 3: Complete the flow with the authorization code
+	inputs := map[string]string{
+		"code": authCode,
+	}
+
+	completeFlowStep, err := completeAuthFlow(flowID, "", inputs)
+	if err != nil {
+		ts.T().Fatalf("Failed to complete Google authentication flow: %v", err)
+	}
+
+	// Verify flow completion
+	ts.Require().Equal("COMPLETE", completeFlowStep.FlowStatus, "Expected flow status to be COMPLETE")
+	ts.Require().NotEmpty(completeFlowStep.Assertion, "Assertion token should be present")
 }

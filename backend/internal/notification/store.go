@@ -28,6 +28,11 @@ import (
 	"github.com/asgardeo/thunder/internal/system/log"
 )
 
+var (
+	serializePropertiesToJSONArray = cmodels.SerializePropertiesToJSONArray
+	deserializePropertiesFromJSON  = cmodels.DeserializePropertiesFromJSON
+)
+
 // notificationStoreInterface defines the interface for notification sender storage operations.
 type notificationStoreInterface interface {
 	createSender(sender common.NotificationSenderDTO) error
@@ -39,16 +44,20 @@ type notificationStoreInterface interface {
 }
 
 // notificationStore is the implementation of notificationStoreInterface.
-type notificationStore struct{}
+type notificationStore struct {
+	dbProvider provider.DBProviderInterface
+}
 
 // newNotificationStore returns a new instance of notificationStoreInterface.
 func newNotificationStore() notificationStoreInterface {
-	return &notificationStore{}
+	return &notificationStore{
+		dbProvider: provider.GetDBProvider(),
+	}
 }
 
 // createSender creates a new notification sender.
 func (s *notificationStore) createSender(sender common.NotificationSenderDTO) error {
-	dbClient, err := provider.GetDBProvider().GetDBClient("identity")
+	dbClient, err := s.dbProvider.GetDBClient("identity")
 	if err != nil {
 		return fmt.Errorf("failed to get database client: %w", err)
 	}
@@ -56,7 +65,7 @@ func (s *notificationStore) createSender(sender common.NotificationSenderDTO) er
 	// Serialize properties to JSON
 	var propertiesJSON string
 	if len(sender.Properties) > 0 {
-		propertiesJSON, err = cmodels.SerializePropertiesToJSONArray(sender.Properties)
+		propertiesJSON, err = serializePropertiesToJSONArray(sender.Properties)
 		if err != nil {
 			return fmt.Errorf("failed to serialize properties to JSON: %w", err)
 		}
@@ -73,7 +82,7 @@ func (s *notificationStore) createSender(sender common.NotificationSenderDTO) er
 
 // listSenders retrieves all notification senders
 func (s *notificationStore) listSenders() ([]common.NotificationSenderDTO, error) {
-	dbClient, err := provider.GetDBProvider().GetDBClient("identity")
+	dbClient, err := s.dbProvider.GetDBClient("identity")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database client: %w", err)
 	}
@@ -90,9 +99,17 @@ func (s *notificationStore) listSenders() ([]common.NotificationSenderDTO, error
 			return nil, fmt.Errorf("failed to build sender from result row: %w", err)
 		}
 
-		propertiesJSON, ok := row["properties"].(string)
-		if ok && propertiesJSON != "" {
-			properties, err := cmodels.DeserializePropertiesFromJSON(propertiesJSON)
+		var propertiesJSON string
+		// Handle both string and []byte types for properties
+		switch v := row["properties"].(type) {
+		case string:
+			propertiesJSON = v
+		case []byte:
+			propertiesJSON = string(v)
+		}
+
+		if propertiesJSON != "" {
+			properties, err := deserializePropertiesFromJSON(propertiesJSON)
 			if err != nil {
 				return nil, fmt.Errorf("failed to deserialize properties from JSON: %w", err)
 			}
@@ -120,7 +137,7 @@ func (s *notificationStore) getSender(query dbmodel.DBQuery,
 	identifier string) (*common.NotificationSenderDTO, error) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "NotificationStore"))
 
-	dbClient, err := provider.GetDBProvider().GetDBClient("identity")
+	dbClient, err := s.dbProvider.GetDBClient("identity")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database client: %w", err)
 	}
@@ -142,9 +159,17 @@ func (s *notificationStore) getSender(query dbmodel.DBQuery,
 		return nil, fmt.Errorf("failed to build sender from result row: %w", err)
 	}
 
-	propertiesJSON, ok := results[0]["properties"].(string)
-	if ok && propertiesJSON != "" {
-		properties, err := cmodels.DeserializePropertiesFromJSON(propertiesJSON)
+	var propertiesJSON string
+	// Handle both string and []byte types for properties
+	switch v := results[0]["properties"].(type) {
+	case string:
+		propertiesJSON = v
+	case []byte:
+		propertiesJSON = string(v)
+	}
+
+	if propertiesJSON != "" {
+		properties, err := deserializePropertiesFromJSON(propertiesJSON)
 		if err != nil {
 			return nil, fmt.Errorf("failed to deserialize properties from JSON: %w", err)
 		}
@@ -156,7 +181,7 @@ func (s *notificationStore) getSender(query dbmodel.DBQuery,
 
 // updateSender updates an existing notification sender.
 func (s *notificationStore) updateSender(id string, sender common.NotificationSenderDTO) error {
-	dbClient, err := provider.GetDBProvider().GetDBClient("identity")
+	dbClient, err := s.dbProvider.GetDBClient("identity")
 	if err != nil {
 		return fmt.Errorf("failed to get database client: %w", err)
 	}
@@ -164,7 +189,7 @@ func (s *notificationStore) updateSender(id string, sender common.NotificationSe
 	// Serialize properties to JSON
 	var propertiesJSON string
 	if len(sender.Properties) > 0 {
-		propertiesJSON, err = cmodels.SerializePropertiesToJSONArray(sender.Properties)
+		propertiesJSON, err = serializePropertiesToJSONArray(sender.Properties)
 		if err != nil {
 			return fmt.Errorf("failed to serialize properties to JSON: %w", err)
 		}
@@ -183,7 +208,7 @@ func (s *notificationStore) updateSender(id string, sender common.NotificationSe
 func (s *notificationStore) deleteSender(id string) error {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "NotificationStore"))
 
-	dbClient, err := provider.GetDBProvider().GetDBClient("identity")
+	dbClient, err := s.dbProvider.GetDBClient("identity")
 	if err != nil {
 		return fmt.Errorf("failed to get database client: %w", err)
 	}

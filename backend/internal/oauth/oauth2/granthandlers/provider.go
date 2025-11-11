@@ -19,7 +19,11 @@
 package granthandlers
 
 import (
+	"github.com/asgardeo/thunder/internal/oauth/oauth2/authz"
 	"github.com/asgardeo/thunder/internal/oauth/oauth2/constants"
+	"github.com/asgardeo/thunder/internal/oauth/oauth2/tokenservice"
+	"github.com/asgardeo/thunder/internal/system/jwt"
+	"github.com/asgardeo/thunder/internal/user"
 )
 
 // GrantHandlerProviderInterface defines the interface for the grant handler provider.
@@ -28,22 +32,40 @@ type GrantHandlerProviderInterface interface {
 }
 
 // GrantHandlerProvider implements the GrantHandlerProviderInterface.
-type GrantHandlerProvider struct{}
+type GrantHandlerProvider struct {
+	clientCredentialsGrantHandler GrantHandlerInterface
+	authorizationCodeGrantHandler GrantHandlerInterface
+	refreshTokenGrantHandler      GrantHandlerInterface
+	tokenExchangeGrantHandler     GrantHandlerInterface
+}
 
-// NewGrantHandlerProvider creates a new instance of GrantHandlerProvider.
-func NewGrantHandlerProvider() GrantHandlerProviderInterface {
-	return &GrantHandlerProvider{}
+// newGrantHandlerProvider creates a new instance of GrantHandlerProvider.
+func newGrantHandlerProvider(
+	jwtService jwt.JWTServiceInterface,
+	userService user.UserServiceInterface,
+	authzService authz.AuthorizeServiceInterface,
+	tokenBuilder tokenservice.TokenBuilderInterface,
+	tokenValidator tokenservice.TokenValidatorInterface,
+) GrantHandlerProviderInterface {
+	return &GrantHandlerProvider{
+		clientCredentialsGrantHandler: newClientCredentialsGrantHandler(tokenBuilder),
+		authorizationCodeGrantHandler: newAuthorizationCodeGrantHandler(userService, authzService, tokenBuilder),
+		refreshTokenGrantHandler:      newRefreshTokenGrantHandler(jwtService, userService, tokenBuilder, tokenValidator),
+		tokenExchangeGrantHandler:     newTokenExchangeGrantHandler(tokenBuilder, tokenValidator),
+	}
 }
 
 // GetGrantHandler returns the appropriate grant handler for the given grant type.
 func (p *GrantHandlerProvider) GetGrantHandler(grantType constants.GrantType) (GrantHandlerInterface, error) {
 	switch grantType {
 	case constants.GrantTypeClientCredentials:
-		return newClientCredentialsGrantHandler(), nil
+		return p.clientCredentialsGrantHandler, nil
 	case constants.GrantTypeAuthorizationCode:
-		return newAuthorizationCodeGrantHandler(), nil
+		return p.authorizationCodeGrantHandler, nil
 	case constants.GrantTypeRefreshToken:
-		return newRefreshTokenGrantHandler(), nil
+		return p.refreshTokenGrantHandler, nil
+	case constants.GrantTypeTokenExchange:
+		return p.tokenExchangeGrantHandler, nil
 	default:
 		return nil, constants.UnSupportedGrantTypeError
 	}

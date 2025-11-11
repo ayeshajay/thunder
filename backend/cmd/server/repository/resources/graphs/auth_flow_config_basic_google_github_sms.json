@@ -32,9 +32,11 @@
                     "required": false
                 }
             ],
+            "properties": {
+                "idpId": "<google-idp-id>"
+            },
             "executor": {
-                "name": "GoogleOIDCAuthExecutor",
-                "idpName": "Google"
+                "name": "GoogleOIDCAuthExecutor"
             },
             "next": [
                 "authenticated"
@@ -43,9 +45,11 @@
         {
             "id": "github_auth",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "idpId": "<github-idp-id>"
+            },
             "executor": {
-                "name": "GithubOAuthExecutor",
-                "idpName": "Github"
+                "name": "GithubOAuthExecutor"
             },
             "next": [
                 "authenticated"
@@ -68,11 +72,11 @@
         {
             "id": "sms_otp_auth",
             "type": "TASK_EXECUTION",
+            "properties": {
+                "senderId": "<your-sender-id>"
+            },
             "executor": {
-                "name": "SMSOTPAuthExecutor",
-                "properties": {
-                    "senderId": "<your-sender-id>"
-                }
+                "name": "SMSOTPAuthExecutor"
             },
             "next": [
                 "attr_collector"

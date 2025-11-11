@@ -21,6 +21,28 @@ jobs:
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
+        with:
+          # We need to fetch all branches and commits so that Nx affected has a base to compare against.
+          fetch-depth: 0
+
+      - name: ⚙️ Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: 🐳 Set SHAs for Nx
+        id: set-shas
+        uses: nrwl/nx-set-shas@v3
+        with:
+          main-branch-name: "main"
+
+      - name: 📦 Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 'latest'
+          run_install: false
+          cache: true
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: ⚙️ Set up Go Environment
         uses: ./.github/actions/setup-go
@@ -28,12 +50,23 @@ jobs:
       - name: 📦 Prepare golangci-lint Locally
         run: make golangci-lint
 
-      - name: 🔍 Run Linter
-        run: make lint
+      - name: 🔍 Run Backend Linter
+        run: make lint_backend
+
+      - name: 🧩 Install Dependencies & Build Frontend
+        run: |
+          cd frontend
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: 🔍 Run Frontend Linter
+        run: |
+          cd frontend
+          pnpm nx affected --target=lint --parallel=3 --base=${{ env.NX_BASE }} --head=${{ env.NX_HEAD }}
 
   build:
-    name: 🛠️ Build and Test
-    if: ${{ github.event.label.name == 'trigger-pr-builder' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}
+    name: 🛠️ Build Product
+    if: ${{ github.event.label.name == 'trigger-pr-builder' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'}}
     runs-on: ubuntu-latest
     steps:
       - name: 📥 Checkout Code
@@ -41,6 +74,133 @@ jobs:
 
       - name: ⚙️ Set up Go Environment
         uses: ./.github/actions/setup-go
+
+      - name: ⚙️ Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: 📦 Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '9.x'
+          run_install: false
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: 🗄️ Cache Go Modules
+        uses: actions/cache@v4
+        id: cache-go-modules
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-modules-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-modules-
+
+      - name: 📦 Install Backend Dependencies
+        run: |
+          cd backend
+          go mod download
+          cd ../tests/integration
+          go mod download
+
+      - name: 📦 Install Frontend Dependencies
+        run: |
+          cd frontend
+          pnpm install --frozen-lockfile
+
+      - name: 🧹 Clean Previous Builds
+        run: |
+          set -e
+          make clean_all
+
+      - name: 🔨 Build Product with Coverage
+        run: |
+          set -e
+          export LOG_LEVEL=debug
+          make build_with_coverage_only OS=$(go env GOOS) ARCH=$(go env GOARCH)
+
+          # Find the built distribution
+          DIST_PATH=$(find target/dist -name "thunder-*.zip" | head -1)
+          echo "Built distribution: $DIST_PATH"
+
+      - name: 🔨 Build Frontend
+        run: |
+          cd frontend
+          pnpm build
+
+      - name: 🧪 Run Frontend Tests with Coverage
+        run: |
+          cd frontend/apps/thunder-develop
+          pnpm test:coverage
+
+      - name: 📦 Upload Built Distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: thunder-distribution
+          path: target/dist/*.zip
+          if-no-files-found: error
+
+      - name: 📊 Upload Unit Test Coverage Report to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: backend/coverage_unit.out
+          flags: backend-unit
+          name: Backend Unit Tests
+          fail_ci_if_error: false
+
+      - name: 📦 Archive Unit Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage-report
+          path: backend/coverage_unit.out
+          if-no-files-found: error
+
+      - name: 📊 Upload `@thunder/develop` Unit Test Coverage Report to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: frontend/apps/thunder-develop/coverage/lcov.info
+          flags: frontend-apps-develop-unit
+          name: Frontend Develop App Unit Tests
+          fail_ci_if_error: false
+
+  test-integration:
+    name: 🧪 Integration Tests (${{ matrix.database }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [sqlite, postgres]
+      fail-fast: false
+    services:
+      postgres:
+        image: postgres:latest
+        env:
+          POSTGRES_USER: asgthunder
+          POSTGRES_PASSWORD: asgthunder
+          POSTGRES_DB: thunderdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Set up Go Environment
+        uses: ./.github/actions/setup-go
+
+      - name: 📥 Download Unit Coverage Report
+        uses: actions/download-artifact@v4
+        with:
+          name: unit-coverage-report
+          path: backend/
 
       - name: 🗄️ Cache Go Modules
         uses: actions/cache@v4
@@ -60,13 +220,36 @@ jobs:
           cd ../tests/integration
           go mod download
 
-      - name: 🧹 Clean Previous Builds
+      - name: 📝 Configure Test Database
         run: |
-          set -e
-          make clean_all
+          chmod +x tests/integration/resources/scripts/setup-test-config.sh
+          ./tests/integration/resources/scripts/setup-test-config.sh
+        env:
+          DB_TYPE: ${{ matrix.database }}
 
-      - name: 🔨 Build and Run Tests
-        run: |
-          set -e
-          export LOG_LEVEL=debug
-          make all OS=$(go env GOOS) ARCH=$(go env GOARCH)
+      - name: 🧪 Run Integration Tests (${{ matrix.database }})
+        uses: ./.github/actions/run-integration-tests
+        with:
+          database-type: ${{ matrix.database }}
+          coverage-enabled: true
+
+      - name: 📊 Upload Integration Test Coverage Report to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/coverage_integration.out
+          flags: backend-integration-${{ matrix.database }}
+          name: Backend Integration Tests (${{ matrix.database }})
+          fail_ci_if_error: false
+
+      - name: 🧩 Generate Combined Coverage Report
+        run: ./build.sh merge_coverage
+
+      - name: 📊 Upload Combined Coverage Report to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/coverage_combined.out
+          flags: backend-combined-${{ matrix.database }}
+          name: Backend-combined Coverage (${{ matrix.database }})
+          fail_ci_if_error: false

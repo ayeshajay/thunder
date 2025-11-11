@@ -1,0 +1,37 @@
+{
+    "id": "registration_flow_config_google",
+    "type": "REGISTRATION",
+    "nodes": [
+        {
+            "id": "google_auth",
+            "type": "TASK_EXECUTION",
+            "properties": {
+                "idpId": "test-google-idp-id"
+            },
+            "executor": {
+                "name": "GoogleOIDCAuthExecutor"
+            },
+            "next": [
+                "provisioning"
+            ]
+        },
+        {
+            "id": "provisioning",
+            "type": "TASK_EXECUTION",
+            "properties": {
+                "ouId": "test-ou-id",
+                "userType": "google_reg_flow_user"
+            },
+            "executor": {
+                "name": "ProvisioningExecutor"
+            },
+            "next": [
+                "authenticated"
+            ]
+        },
+        {
+            "id": "authenticated",
+            "type": "AUTHENTICATION_SUCCESS"
+        }
+    ]
+}

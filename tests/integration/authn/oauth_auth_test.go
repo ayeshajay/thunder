@@ -37,11 +37,36 @@ const (
 	mockOAuthPort   = 8092
 )
 
+var oauthUserSchema = testutils.UserSchema{
+	Name: "oauth_user",
+	Schema: map[string]interface{}{
+		"username": map[string]interface{}{
+			"type": "string",
+		},
+		"password": map[string]interface{}{
+			"type": "string",
+		},
+		"sub": map[string]interface{}{
+			"type": "string",
+		},
+		"email": map[string]interface{}{
+			"type": "string",
+		},
+		"givenName": map[string]interface{}{
+			"type": "string",
+		},
+		"familyName": map[string]interface{}{
+			"type": "string",
+		},
+	},
+}
+
 type OAuthAuthTestSuite struct {
 	suite.Suite
 	mockOAuthServer *testutils.MockOAuthServer
 	idpID           string
 	userID          string
+	userSchemaID    string
 }
 
 func TestOAuthAuthTestSuite(t *testing.T) {
@@ -66,6 +91,10 @@ func (suite *OAuthAuthTestSuite) SetupSuite() {
 	err := suite.mockOAuthServer.Start()
 	suite.Require().NoError(err, "Failed to start mock OAuth server")
 
+	schemaID, err := testutils.CreateUserType(oauthUserSchema)
+	suite.Require().NoError(err, "Failed to create OAuth user schema")
+	suite.userSchemaID = schemaID
+
 	userAttributes := map[string]interface{}{
 		"username":   "oauthuser",
 		"password":   "Test@1234",
@@ -79,7 +108,7 @@ func (suite *OAuthAuthTestSuite) SetupSuite() {
 	suite.Require().NoError(err)
 
 	user := testutils.User{
-		Type:             "person",
+		Type:             oauthUserSchema.Name,
 		OrganizationUnit: "root",
 		Attributes:       json.RawMessage(attributesJSON),
 	}
@@ -139,6 +168,10 @@ func (suite *OAuthAuthTestSuite) SetupSuite() {
 func (suite *OAuthAuthTestSuite) TearDownSuite() {
 	if suite.userID != "" {
 		_ = testutils.DeleteUser(suite.userID)
+	}
+
+	if suite.userSchemaID != "" {
+		_ = testutils.DeleteUserType(suite.userSchemaID)
 	}
 
 	if suite.idpID != "" {
@@ -278,6 +311,7 @@ func (suite *OAuthAuthTestSuite) TestOAuthAuthCompleteFlowSuccess() {
 	suite.NotEmpty(authResponse.Type, "Response should contain user type")
 	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
 	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
 }
 
 func (suite *OAuthAuthTestSuite) TestOAuthAuthFinishInvalidSessionToken() {
@@ -360,6 +394,180 @@ func (suite *OAuthAuthTestSuite) TestOAuthAuthFinishWithError() {
 	defer resp.Body.Close()
 
 	suite.Equal(http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestOAuthAuthCompleteFlowWithSkipAssertionFalse tests complete OAuth flow with skip_assertion=false
+func (suite *OAuthAuthTestSuite) TestOAuthAuthCompleteFlowWithSkipAssertionFalse() {
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+oauthAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	redirectURL := startResponse["redirect_url"].(string)
+
+	authCode := suite.simulateOAuthAuthorization(redirectURL)
+	suite.Require().NotEmpty(authCode)
+
+	finishRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           authCode,
+		"skip_assertion": false,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+oauthAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token when skip_assertion is false")
+}
+
+// TestOAuthAuthCompleteFlowWithSkipAssertionTrue tests complete OAuth flow with skip_assertion=true
+func (suite *OAuthAuthTestSuite) TestOAuthAuthCompleteFlowWithSkipAssertionTrue() {
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+oauthAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	redirectURL := startResponse["redirect_url"].(string)
+
+	authCode := suite.simulateOAuthAuthorization(redirectURL)
+	suite.Require().NotEmpty(authCode)
+
+	finishRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"code":           authCode,
+		"skip_assertion": true,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+oauthAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.Empty(authResponse.Assertion, "Response should not contain assertion token when skip_assertion is true")
+}
+
+// TestOAuthAuthWithAssuranceLevelAAL1 tests that OAuth authentication generates AAL1 assurance level
+func (suite *OAuthAuthTestSuite) TestOAuthAuthWithAssuranceLevelAAL1() {
+	// Step 1: Start authentication
+	startRequest := map[string]interface{}{
+		"idp_id": suite.idpID,
+	}
+	startRequestJSON, err := json.Marshal(startRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+oauthAuthStart, bytes.NewReader(startRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := getHTTPClient()
+	resp, err := client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var startResponse map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&startResponse)
+	suite.Require().NoError(err)
+
+	sessionToken := startResponse["session_token"].(string)
+	authCode := suite.simulateOAuthAuthorization(startResponse["redirect_url"].(string))
+
+	// Step 2: Finish authentication
+	finishRequest := map[string]interface{}{
+		"session_token": sessionToken,
+		"code":          authCode,
+	}
+	finishRequestJSON, err := json.Marshal(finishRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+oauthAuthFinish, bytes.NewReader(finishRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
+
+	// Verify assertion contains AAL1 for single-factor OAuth authentication
+	aal := extractAssuranceLevelFromAssertion(authResponse.Assertion, "aal")
+	suite.NotEmpty(aal, "Assertion should contain AAL information")
+	suite.Equal("AAL1", aal, "Single-factor OAuth authentication should result in AAL1")
+
+	// Verify IAL is present
+	ial := extractAssuranceLevelFromAssertion(authResponse.Assertion, "ial")
+	suite.NotEmpty(ial, "Assertion should contain IAL information")
+	suite.Equal("IAL1", ial, "Self-asserted identity should result in IAL1")
 }
 
 // simulateOAuthAuthorization simulates user authorization and returns authorization code

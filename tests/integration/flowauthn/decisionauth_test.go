@@ -50,8 +50,32 @@ var (
 		Parent:      nil,
 	}
 
+	decisionUserSchema = testutils.UserSchema{
+		Name: "decision_user",
+		Schema: map[string]interface{}{
+			"username": map[string]interface{}{
+				"type": "string",
+			},
+			"password": map[string]interface{}{
+				"type": "string",
+			},
+			"email": map[string]interface{}{
+				"type": "string",
+			},
+			"firstName": map[string]interface{}{
+				"type": "string",
+			},
+			"lastName": map[string]interface{}{
+				"type": "string",
+			},
+			"mobileNumber": map[string]interface{}{
+				"type": "string",
+			},
+		},
+	}
+
 	testUserWithMobileDecision = testutils.User{
-		Type: "person",
+		Type: decisionUserSchema.Name,
 		Attributes: json.RawMessage(`{
 			"username": "decisionuser1",
 			"password": "testpassword",
@@ -63,7 +87,7 @@ var (
 	}
 
 	testUserWithoutMobileDecision = testutils.User{
-		Type: "person",
+		Type: decisionUserSchema.Name,
 		Attributes: json.RawMessage(`{
 			"username": "decisionuser2",
 			"password": "testpassword",
@@ -75,8 +99,9 @@ var (
 )
 
 var (
-	decisionTestAppID string
-	decisionTestOUID  string
+	decisionTestAppID    string
+	decisionTestOUID     string
+	decisionUserSchemaID string
 )
 
 type DecisionAndMFAFlowTestSuite struct {
@@ -106,6 +131,12 @@ func (ts *DecisionAndMFAFlowTestSuite) SetupSuite() {
 		ts.T().Fatalf("Failed to create test application during setup: %v", err)
 	}
 	decisionTestAppID = appID
+
+	schemaID, err := testutils.CreateUserType(decisionUserSchema)
+	if err != nil {
+		ts.T().Fatalf("Failed to create test user schema during setup: %v", err)
+	}
+	decisionUserSchemaID = schemaID
 
 	// Start mock notification server
 	ts.mockServer = testutils.NewMockNotificationServer(mockDecisionNotificationServerPort)
@@ -167,6 +198,12 @@ func (ts *DecisionAndMFAFlowTestSuite) TearDownSuite() {
 	if decisionTestOUID != "" {
 		if err := testutils.DeleteOrganizationUnit(decisionTestOUID); err != nil {
 			ts.T().Logf("Failed to delete test organization unit during teardown: %v", err)
+		}
+	}
+
+	if decisionUserSchemaID != "" {
+		if err := testutils.DeleteUserType(decisionUserSchemaID); err != nil {
+			ts.T().Logf("Failed to delete test user schema during teardown: %v", err)
 		}
 	}
 
@@ -260,6 +297,17 @@ func (ts *DecisionAndMFAFlowTestSuite) TestBasicAuthWithMobileUserSMSOTP() {
 	ts.Require().NotEmpty(completeFlowStep.Assertion,
 		"JWT assertion should be returned after successful authentication")
 	ts.Require().Empty(completeFlowStep.FailureReason, "Failure reason should be empty for successful authentication")
+
+	// Decode and validate JWT claims
+	jwtClaims, err := testutils.DecodeJWT(completeFlowStep.Assertion)
+	ts.Require().NoError(err, "Failed to decode JWT assertion")
+	ts.Require().NotNil(jwtClaims, "JWT claims should not be nil")
+
+	// Validate JWT contains expected user type and OU ID
+	ts.Require().Equal(decisionUserSchema.Name, jwtClaims.UserType, "Expected userType to match created schema")
+	ts.Require().Equal(decisionTestOUID, jwtClaims.OuID, "Expected ouId to match the created organization unit")
+	ts.Require().Equal(decisionTestAppID, jwtClaims.Aud, "Expected aud to match the application ID")
+	ts.Require().NotEmpty(jwtClaims.Sub, "JWT subject should not be empty")
 }
 
 func (ts *DecisionAndMFAFlowTestSuite) TestBasicAuthWithoutMobileUserSMSOTP() {
@@ -370,6 +418,17 @@ func (ts *DecisionAndMFAFlowTestSuite) TestBasicAuthWithoutMobileUserSMSOTP() {
 			"JWT assertion should be returned after successful authentication")
 		ts.Require().Empty(completeFlowStep.FailureReason,
 			"Failure reason should be empty for successful authentication")
+
+		// Decode and validate JWT claims
+		jwtClaims, err := testutils.DecodeJWT(completeFlowStep.Assertion)
+		ts.Require().NoError(err, "Failed to decode JWT assertion")
+		ts.Require().NotNil(jwtClaims, "JWT claims should not be nil")
+
+		// Validate JWT contains expected user type and OU ID
+		ts.Require().Equal(decisionUserSchema.Name, jwtClaims.UserType, "Expected userType to match created schema")
+		ts.Require().Equal(decisionTestOUID, jwtClaims.OuID, "Expected ouId to match the created organization unit")
+		ts.Require().Equal(decisionTestAppID, jwtClaims.Aud, "Expected aud to match the application ID")
+		ts.Require().NotEmpty(jwtClaims.Sub, "JWT subject should not be empty")
 	})
 
 	// Test case 2: Retry auth flow for same user - should not prompt for mobile again
@@ -468,6 +527,17 @@ func (ts *DecisionAndMFAFlowTestSuite) TestBasicAuthWithoutMobileUserSMSOTP() {
 			"JWT assertion should be returned after successful authentication")
 		ts.Require().Empty(completeFlowStep.FailureReason,
 			"Failure reason should be empty for successful authentication")
+
+		// Decode and validate JWT claims
+		jwtClaims, err := testutils.DecodeJWT(completeFlowStep.Assertion)
+		ts.Require().NoError(err, "Failed to decode JWT assertion")
+		ts.Require().NotNil(jwtClaims, "JWT claims should not be nil")
+
+		// Validate JWT contains expected user type and OU ID
+		ts.Require().Equal(decisionUserSchema.Name, jwtClaims.UserType, "Expected userType to match created schema")
+		ts.Require().Equal(decisionTestOUID, jwtClaims.OuID, "Expected ouId to match the created organization unit")
+		ts.Require().Equal(decisionTestAppID, jwtClaims.Aud, "Expected aud to match the application ID")
+		ts.Require().NotEmpty(jwtClaims.Sub, "JWT subject should not be empty")
 	})
 }
 
@@ -564,6 +634,17 @@ func (ts *DecisionAndMFAFlowTestSuite) TestSMSOTPAuthWithValidMobile() {
 	ts.Require().NotEmpty(completeFlowStep.Assertion,
 		"JWT assertion should be returned after successful authentication")
 	ts.Require().Empty(completeFlowStep.FailureReason, "Failure reason should be empty for successful authentication")
+
+	// Decode and validate JWT claims
+	jwtClaims, err := testutils.DecodeJWT(completeFlowStep.Assertion)
+	ts.Require().NoError(err, "Failed to decode JWT assertion")
+	ts.Require().NotNil(jwtClaims, "JWT claims should not be nil")
+
+	// Validate JWT contains expected user type and OU ID
+	ts.Require().Equal(decisionUserSchema.Name, jwtClaims.UserType, "Expected userType to match created schema")
+	ts.Require().Equal(decisionTestOUID, jwtClaims.OuID, "Expected ouId to match the created organization unit")
+	ts.Require().Equal(decisionTestAppID, jwtClaims.Aud, "Expected aud to match the application ID")
+	ts.Require().NotEmpty(jwtClaims.Sub, "JWT subject should not be empty")
 }
 
 func (ts *DecisionAndMFAFlowTestSuite) TestSMSOTPAuthWithInvalidMobile() {

@@ -34,27 +34,41 @@ import (
 	sysutils "github.com/asgardeo/thunder/internal/system/utils"
 )
 
-// AuthenticationHandler defines the handler for managing authentication API requests.
-type AuthenticationHandler struct {
+// authenticationHandler defines the handler for managing authentication API requests.
+type authenticationHandler struct {
 	authService AuthenticationServiceInterface
 }
 
-// NewAuthenticationHandler creates a new instance of AuthenticationHandler.
-func NewAuthenticationHandler() *AuthenticationHandler {
-	return &AuthenticationHandler{
-		authService: NewAuthenticationService(),
+// newAuthenticationHandler creates a new instance of AuthenticationHandler.
+func newAuthenticationHandler(authnService AuthenticationServiceInterface) *authenticationHandler {
+	return &authenticationHandler{
+		authService: authnService,
 	}
 }
 
 // HandleCredentialsAuthRequest handles the credentials authentication request.
-func (ah *AuthenticationHandler) HandleCredentialsAuthRequest(w http.ResponseWriter, r *http.Request) {
-	authRequest, err := sysutils.DecodeJSONBody[map[string]interface{}](r)
+func (ah *authenticationHandler) HandleCredentialsAuthRequest(w http.ResponseWriter, r *http.Request) {
+	authRequestPtr, err := sysutils.DecodeJSONBody[map[string]interface{}](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
 		return
 	}
+	authRequest := *authRequestPtr
 
-	authResponse, svcErr := ah.authService.AuthenticateWithCredentials(*authRequest)
+	// Check for skip_assertion field
+	skipAssertion, ok := authRequest["skip_assertion"].(bool)
+	if !ok {
+		skipAssertion = false
+	}
+	delete(authRequest, "skip_assertion")
+
+	// Check for assertion field
+	assertion, ok := authRequest["assertion"].(string)
+	if ok {
+		delete(authRequest, "assertion")
+	}
+
+	authResponse, svcErr := ah.authService.AuthenticateWithCredentials(authRequest, skipAssertion, assertion)
 	if svcErr != nil {
 		ah.handleServiceError(w, svcErr)
 		return
@@ -65,7 +79,7 @@ func (ah *AuthenticationHandler) HandleCredentialsAuthRequest(w http.ResponseWri
 }
 
 // HandleSendSMSOTPRequest handles the send SMS OTP authentication request.
-func (ah *AuthenticationHandler) HandleSendSMSOTPRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleSendSMSOTPRequest(w http.ResponseWriter, r *http.Request) {
 	otpRequest, err := sysutils.DecodeJSONBody[SendOTPAuthRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
@@ -87,14 +101,15 @@ func (ah *AuthenticationHandler) HandleSendSMSOTPRequest(w http.ResponseWriter, 
 }
 
 // HandleVerifySMSOTPRequest handles the verify SMS OTP authentication request.
-func (ah *AuthenticationHandler) HandleVerifySMSOTPRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleVerifySMSOTPRequest(w http.ResponseWriter, r *http.Request) {
 	otpRequest, err := sysutils.DecodeJSONBody[VerifyOTPAuthRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
 		return
 	}
 
-	authResponse, svcErr := ah.authService.VerifyOTP(otpRequest.SessionToken, otpRequest.OTP)
+	authResponse, svcErr := ah.authService.VerifyOTP(otpRequest.SessionToken, otpRequest.SkipAssertion,
+		otpRequest.Assertion, otpRequest.OTP)
 	if svcErr != nil {
 		ah.handleServiceError(w, svcErr)
 		return
@@ -105,7 +120,7 @@ func (ah *AuthenticationHandler) HandleVerifySMSOTPRequest(w http.ResponseWriter
 }
 
 // HandleGoogleAuthStartRequest handles the Google OAuth start authentication request.
-func (ah *AuthenticationHandler) HandleGoogleAuthStartRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleGoogleAuthStartRequest(w http.ResponseWriter, r *http.Request) {
 	authRequest, err := sysutils.DecodeJSONBody[IDPAuthInitRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
@@ -123,15 +138,15 @@ func (ah *AuthenticationHandler) HandleGoogleAuthStartRequest(w http.ResponseWri
 }
 
 // HandleGoogleAuthFinishRequest handles the Google OAuth finish authentication request.
-func (ah *AuthenticationHandler) HandleGoogleAuthFinishRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleGoogleAuthFinishRequest(w http.ResponseWriter, r *http.Request) {
 	authRequest, err := sysutils.DecodeJSONBody[IDPAuthFinishRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
 		return
 	}
 
-	authResponse, svcErr := ah.authService.FinishIDPAuthentication(idp.IDPTypeGoogle,
-		authRequest.SessionToken, authRequest.Code)
+	authResponse, svcErr := ah.authService.FinishIDPAuthentication(idp.IDPTypeGoogle, authRequest.SessionToken,
+		authRequest.SkipAssertion, authRequest.Assertion, authRequest.Code)
 	if svcErr != nil {
 		ah.handleServiceError(w, svcErr)
 		return
@@ -142,7 +157,7 @@ func (ah *AuthenticationHandler) HandleGoogleAuthFinishRequest(w http.ResponseWr
 }
 
 // HandleGithubAuthStartRequest handles the GitHub OAuth start authentication request.
-func (ah *AuthenticationHandler) HandleGithubAuthStartRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleGithubAuthStartRequest(w http.ResponseWriter, r *http.Request) {
 	authRequest, err := sysutils.DecodeJSONBody[IDPAuthInitRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
@@ -160,15 +175,15 @@ func (ah *AuthenticationHandler) HandleGithubAuthStartRequest(w http.ResponseWri
 }
 
 // HandleGithubAuthFinishRequest handles the GitHub OAuth finish authentication request.
-func (ah *AuthenticationHandler) HandleGithubAuthFinishRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleGithubAuthFinishRequest(w http.ResponseWriter, r *http.Request) {
 	authRequest, err := sysutils.DecodeJSONBody[IDPAuthFinishRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
 		return
 	}
 
-	authResponse, svcErr := ah.authService.FinishIDPAuthentication(idp.IDPTypeGitHub,
-		authRequest.SessionToken, authRequest.Code)
+	authResponse, svcErr := ah.authService.FinishIDPAuthentication(idp.IDPTypeGitHub, authRequest.SessionToken,
+		authRequest.SkipAssertion, authRequest.Assertion, authRequest.Code)
 	if svcErr != nil {
 		ah.handleServiceError(w, svcErr)
 		return
@@ -179,7 +194,7 @@ func (ah *AuthenticationHandler) HandleGithubAuthFinishRequest(w http.ResponseWr
 }
 
 // HandleStandardOAuthStartRequest handles the standard OAuth start authentication request.
-func (ah *AuthenticationHandler) HandleStandardOAuthStartRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleStandardOAuthStartRequest(w http.ResponseWriter, r *http.Request) {
 	authRequest, err := sysutils.DecodeJSONBody[IDPAuthInitRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
@@ -197,15 +212,15 @@ func (ah *AuthenticationHandler) HandleStandardOAuthStartRequest(w http.Response
 }
 
 // HandleStandardOAuthFinishRequest handles the standard OAuth finish authentication request.
-func (ah *AuthenticationHandler) HandleStandardOAuthFinishRequest(w http.ResponseWriter, r *http.Request) {
+func (ah *authenticationHandler) HandleStandardOAuthFinishRequest(w http.ResponseWriter, r *http.Request) {
 	authRequest, err := sysutils.DecodeJSONBody[IDPAuthFinishRequestDTO](r)
 	if err != nil {
 		ah.writeErrorResponse(w, http.StatusBadRequest, common.APIErrorInvalidRequestFormat)
 		return
 	}
 
-	authResponse, svcErr := ah.authService.FinishIDPAuthentication(idp.IDPTypeOAuth,
-		authRequest.SessionToken, authRequest.Code)
+	authResponse, svcErr := ah.authService.FinishIDPAuthentication(idp.IDPTypeOAuth, authRequest.SessionToken,
+		authRequest.SkipAssertion, authRequest.Assertion, authRequest.Code)
 	if svcErr != nil {
 		ah.handleServiceError(w, svcErr)
 		return
@@ -216,7 +231,7 @@ func (ah *AuthenticationHandler) HandleStandardOAuthFinishRequest(w http.Respons
 }
 
 // handleServiceError converts service errors to appropriate HTTP responses.
-func (ah *AuthenticationHandler) handleServiceError(w http.ResponseWriter, svcErr *serviceerror.ServiceError) {
+func (ah *authenticationHandler) handleServiceError(w http.ResponseWriter, svcErr *serviceerror.ServiceError) {
 	status := http.StatusInternalServerError
 	if svcErr.Type == serviceerror.ClientErrorType {
 		switch svcErr.Code {
@@ -238,7 +253,7 @@ func (ah *AuthenticationHandler) handleServiceError(w http.ResponseWriter, svcEr
 }
 
 // writeSuccessResponse writes a successful JSON response.
-func (ah *AuthenticationHandler) writeSuccessResponse(w http.ResponseWriter, data interface{}) {
+func (ah *authenticationHandler) writeSuccessResponse(w http.ResponseWriter, data interface{}) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "AuthenticationHandler"))
 
 	w.Header().Set(serverconst.ContentTypeHeaderName, serverconst.ContentTypeJSON)
@@ -251,7 +266,7 @@ func (ah *AuthenticationHandler) writeSuccessResponse(w http.ResponseWriter, dat
 }
 
 // writeErrorResponse writes an error response.
-func (ah *AuthenticationHandler) writeErrorResponse(w http.ResponseWriter,
+func (ah *authenticationHandler) writeErrorResponse(w http.ResponseWriter,
 	statusCode int, errorResp apierror.ErrorResponse) {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, "AuthenticationHandler"))
 

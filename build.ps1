@@ -33,6 +33,10 @@ $ErrorActionPreference = "Stop"
 
 $SCRIPT_DIR = $PSScriptRoot
 
+# Script-level variables for process management
+$script:BACKEND_PID = $null
+$script:FRONTEND_PID = $null
+
 # --- Set Default OS and the architecture --- 
 # Auto-detect GO OS
 if ([string]::IsNullOrEmpty($GO_OS)) {
@@ -105,8 +109,12 @@ if ($GO_ARCH -eq "amd64") {
 $VERSION_FILE = "version.txt"
 $VERSION = Get-Content $VERSION_FILE -Raw
 $VERSION = $VERSION.Trim()
+$THUNDER_VERSION = $VERSION
+if ($THUNDER_VERSION.StartsWith("v")) {
+    $THUNDER_VERSION = $THUNDER_VERSION.Substring(1)
+}
 $BINARY_NAME = "thunder"
-$PRODUCT_FOLDER = "${BINARY_NAME}-${VERSION}-${GO_PACKAGE_OS}-${GO_PACKAGE_ARCH}"
+$PRODUCT_FOLDER = "${BINARY_NAME}-${THUNDER_VERSION}-${GO_PACKAGE_OS}-${GO_PACKAGE_ARCH}"
 
 # --- Sample App Distribution details ---
 $SAMPLE_PACKAGE_OS = $SAMPLE_DIST_OS
@@ -115,7 +123,7 @@ $SAMPLE_PACKAGE_ARCH = $SAMPLE_DIST_ARCH
 $SAMPLE_APP_SERVER_BINARY_NAME = "server"
 $packageJson = Get-Content "samples/apps/oauth/package.json" -Raw | ConvertFrom-Json
 $SAMPLE_APP_VERSION = $packageJson.version
-$SAMPLE_APP_FOLDER = "${BINARY_NAME}-sample-app-${SAMPLE_APP_VERSION}-${SAMPLE_PACKAGE_OS}-${SAMPLE_PACKAGE_ARCH}"
+$SAMPLE_APP_FOLDER = "sample-app-${SAMPLE_APP_VERSION}-${SAMPLE_PACKAGE_OS}-${SAMPLE_PACKAGE_ARCH}"
 
 # Server ports
 $BACKEND_PORT = 8090
@@ -133,6 +141,11 @@ $REPOSITORY_DB_DIR = Join-Path $REPOSITORY_DIR "database"
 $SERVER_SCRIPTS_DIR = Join-Path $BACKEND_BASE_DIR "scripts"
 $SERVER_DB_SCRIPTS_DIR = Join-Path $BACKEND_BASE_DIR "dbscripts"
 $SECURITY_DIR = "repository/resources/security"
+$FRONTEND_BASE_DIR = "frontend"
+$GATE_APP_DIST_DIR = "apps/gate"
+$DEVELOP_APP_DIST_DIR = "apps/develop"
+$FRONTEND_GATE_APP_SOURCE_DIR = Join-Path $FRONTEND_BASE_DIR "apps/thunder-gate"
+$FRONTEND_DEVELOP_APP_SOURCE_DIR = Join-Path $FRONTEND_BASE_DIR "apps/thunder-develop"
 $SAMPLE_BASE_DIR = "samples"
 $SAMPLE_APP_DIR = Join-Path $SAMPLE_BASE_DIR "apps/oauth"
 $SAMPLE_APP_SERVER_DIR = Join-Path $SAMPLE_APP_DIR "server"
@@ -274,6 +287,32 @@ function Build-Backend {
     Write-Host "================================================================"
 }
 
+function Build-Frontend {
+    Write-Host "================================================================"
+    Write-Host "Building frontend apps..."
+    
+    # Check if pnpm is installed, if not install it
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+        Write-Host "pnpm not found, installing..."
+        & npm install -g pnpm
+    }
+    
+    # Navigate to frontend directory and install dependencies
+    Push-Location $FRONTEND_BASE_DIR
+    try {
+        Write-Host "Installing frontend dependencies..."
+        & pnpm install
+        
+        Write-Host "Building frontend applications & packages..."
+        & pnpm build
+    }
+    finally {
+        Pop-Location
+    }
+    
+    Write-Host "================================================================"
+}
+
 function Initialize-Databases {
     param(
         [bool]$override = $false
@@ -362,13 +401,47 @@ function Prepare-Backend-For-Packaging {
     Write-Host "================================================================"
 }
 
-function Package-Backend {
+function Prepare-Frontend-For-Packaging {
     Write-Host "================================================================"
-    Write-Host "Packaging backend artifacts..."
+    Write-Host "Copying frontend artifacts..."
+
+    $package_folder = Join-Path $DIST_DIR $PRODUCT_FOLDER
+    New-Item -Path (Join-Path $package_folder $GATE_APP_DIST_DIR) -ItemType Directory -Force | Out-Null
+    New-Item -Path (Join-Path $package_folder $DEVELOP_APP_DIST_DIR) -ItemType Directory -Force | Out-Null
+
+    # Copy gate app build output
+    if (Test-Path (Join-Path $FRONTEND_GATE_APP_SOURCE_DIR "dist")) {
+        Write-Host "Copying Gate app build output..."
+        Get-ChildItem -Path (Join-Path $FRONTEND_GATE_APP_SOURCE_DIR "dist") -Force | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $package_folder $GATE_APP_DIST_DIR) -Recurse -Force
+        }
+    }
+    else {
+        Write-Host "Warning: Gate app build output not found at $((Join-Path $FRONTEND_GATE_APP_SOURCE_DIR "dist"))"
+    }
+    
+    # Copy develop app build output
+    if (Test-Path (Join-Path $FRONTEND_DEVELOP_APP_SOURCE_DIR "dist")) {
+        Write-Host "Copying Develop app build output..."
+        Get-ChildItem -Path (Join-Path $FRONTEND_DEVELOP_APP_SOURCE_DIR "dist") -Force | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $package_folder $DEVELOP_APP_DIST_DIR) -Recurse -Force
+        }
+    }
+    else {
+        Write-Host "Warning: Develop app build output not found at $((Join-Path $FRONTEND_DEVELOP_APP_SOURCE_DIR "dist"))"
+    }
+
+    Write-Host "================================================================"
+}
+
+function Package {
+    Write-Host "================================================================"
+    Write-Host "Packaging backend & frontend artifacts..."
 
     $package_folder = Join-Path $DIST_DIR $PRODUCT_FOLDER
     New-Item -Path $package_folder -ItemType Directory -Force | Out-Null
 
+    Prepare-Frontend-For-Packaging
     Prepare-Backend-For-Packaging
 
     # Copy the appropriate startup script based on the target OS
@@ -949,7 +1022,85 @@ function Ensure-Certificates {
     }
 }
 
-function Run-Server {
+function Run {
+    Write-Host "Running frontend apps..."
+    Run-Frontend
+
+    # Start backend with initial output but without final output/wait
+    Run-Backend -ShowFinalOutput $false
+    
+    $GATE_APP_DEFAULT_PORT = 5190
+    $DEVELOP_APP_DEFAULT_PORT = 5191
+
+    # Run initial data setup
+    Write-Host "⚙️  Running initial data setup..."
+    Write-Host ""
+    
+    # Run the setup script - it will handle server readiness checking
+    # In dev mode, add the frontend dev server redirect URI
+    $setupScript = Join-Path $BACKEND_BASE_DIR "scripts/setup_initial_data.sh"
+    & $setupScript -port $BACKEND_PORT --develop-redirect-uris "https://localhost:${DEVELOP_APP_DEFAULT_PORT}/develop"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ Initial data setup failed"
+        Write-Host "💡 Check the logs above for more details"
+        Write-Host "💡 You can run the setup manually using: $setupScript -port $BACKEND_PORT --develop-redirect-uris `"https://localhost:${DEVELOP_APP_DEFAULT_PORT}/develop`""
+    }
+
+    Write-Host ""
+    Write-Host "🚀 Servers running:"
+    Write-Host "  👉 Backend : https://localhost:$BACKEND_PORT"
+    Write-Host "  📱 Frontend :"
+    Write-Host "      🚪 Gate (Login/Register): https://localhost:${GATE_APP_DEFAULT_PORT}/signin"
+    Write-Host "      🛠️  Develop (Admin Console): https://localhost:${DEVELOP_APP_DEFAULT_PORT}/develop"
+    Write-Host ""
+
+    Write-Host "Press Ctrl+C to stop."
+
+    function Cleanup-Servers {
+        Write-Host ""
+        Write-Host "🛑 Shutting down servers..."
+        # Kill frontend processes using multiple approaches
+        if ($script:FRONTEND_PID) { 
+            Stop-Process -Id $script:FRONTEND_PID -Force -ErrorAction SilentlyContinue
+        }
+        # Kill all pnpm dev processes
+        Get-Process -Name "*pnpm*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        # Kill all node processes running vite
+        Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "*vite*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+        # Kill backend process
+        if ($script:BACKEND_PID) { 
+            Stop-Process -Id $script:BACKEND_PID -Force -ErrorAction SilentlyContinue
+        }
+
+        # Wait a moment for processes to exit gracefully
+        Start-Sleep -Seconds 1
+
+        Write-Host "✅ All servers stopped successfully."
+    }
+    
+    # Set up Ctrl+C handler
+    [Console]::TreatControlCAsInput = $false
+    
+    # Wait for user to press Ctrl+C
+    try {
+        while ($true) {
+            Start-Sleep -Seconds 1
+        }
+    }
+    catch [System.Management.Automation.PipelineStoppedException] {
+        Cleanup-Servers
+        exit 0
+    }
+
+    Wait-Process $script:BACKEND_PID -ErrorAction SilentlyContinue
+}
+
+function Run-Backend {
+    param(
+        [bool]$ShowFinalOutput = $true
+    )
+
     Write-Host "=== Ensuring server certificates exist ==="
     Ensure-Certificates -cert_dir (Join-Path $BACKEND_DIR $SECURITY_DIR)
 
@@ -971,30 +1122,72 @@ function Run-Server {
 
     Kill-Port $BACKEND_PORT
 
-    Write-Host "=== Starting backend ==="
+    Write-Host "=== Starting backend on https://localhost:$BACKEND_PORT ==="
     $env:BACKEND_PORT = $BACKEND_PORT
     
     Push-Location $BACKEND_DIR
     try {
-        Start-Process -FilePath "go" -ArgumentList "run", "." -PassThru
+        $backendProcess = Start-Process -FilePath "go" -ArgumentList "run", "." -PassThru -NoNewWindow
+        $script:BACKEND_PID = $backendProcess.Id
     }
     finally {
         Pop-Location
     }
 
-    Write-Host ""
-    Write-Host "⚡ Thunder Backend : https://localhost:$BACKEND_PORT"
-    Write-Host "Press Ctrl+C to stop."
-    
-    # Wait for user to press Ctrl+C
-    try {
-        while ($true) {
-            Start-Sleep -Seconds 1
+    if ($ShowFinalOutput) {
+        Write-Host ""
+        Write-Host "🚀 Servers running:"
+        Write-Host "👉 Backend : https://localhost:$BACKEND_PORT"
+        Write-Host "Press Ctrl+C to stop."
+
+        try {
+            while ($true) {
+                Start-Sleep -Seconds 1
+            }
         }
+        catch [System.Management.Automation.PipelineStoppedException] {
+            Write-Host ""
+            Write-Host "🛑 Shutting down backend server..."
+            if ($script:BACKEND_PID) { 
+                Stop-Process -Id $script:BACKEND_PID -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host "✅ Backend server stopped successfully."
+            exit 0
+        }
+
+        Wait-Process $backendProcess -ErrorAction SilentlyContinue
     }
-    catch [System.Management.Automation.PipelineStoppedException] {
-        Write-Host "Stopping servers..."
+}
+
+function Run-Frontend {
+    Write-Host "================================================================"
+    Write-Host "Running frontend apps..."
+    
+    # Check if pnpm is installed, if not install it
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+        Write-Host "pnpm not found, installing..."
+        & npm install -g pnpm
     }
+    
+    # Navigate to frontend directory and install dependencies
+    Push-Location $FRONTEND_BASE_DIR
+    try {
+        Write-Host "Installing frontend dependencies..."
+        & pnpm install
+        
+        Write-Host "Building frontend applications & packages..."
+        & pnpm build
+        
+        Write-Host "Starting frontend applications in the background..."
+        # Start frontend processes in background
+        $frontendProcess = Start-Process -FilePath "pnpm" -ArgumentList "-r", "--parallel", "--filter", "@thunder/develop", "--filter", "@thunder/gate", "dev" -PassThru -NoNewWindow
+        $script:FRONTEND_PID = $frontendProcess.Id
+    }
+    finally {
+        Pop-Location
+    }
+    
+    Write-Host "================================================================"
 }
 
 # Main script logic
@@ -1007,7 +1200,10 @@ switch ($Command) {
     }
     "build_backend" {
         Build-Backend
-        Package-Backend
+        Package
+    }
+    "build_frontend" {
+        Build-Frontend
     }
     "build_samples" {
         Build-Sample-App
@@ -1018,7 +1214,8 @@ switch ($Command) {
     }
     "build" {
         Build-Backend
-        Package-Backend
+        Build-Frontend
+        Package
         Build-Sample-App
         Package-Sample-App
     }
@@ -1036,21 +1233,30 @@ switch ($Command) {
         Test-Integration
     }
     "run" {
-        Run-Server
+        Run
+    }
+    "run_backend" {
+        Run-Backend
+    }
+    "run_frontend" {
+        Run-Frontend
     }
     default {
-        Write-Host "Usage: ./build.ps1 {clean|build|test|run} [OS] [ARCH]"
+        Write-Host "Usage: ./build.ps1 {clean|build|build_backend|build_frontend|test|run} [OS] [ARCH]"
         Write-Host ""
         Write-Host "  clean                    - Clean build artifacts"
         Write-Host "  clean_all                - Clean all build artifacts including distributions"
-        Write-Host "  build                    - Build the Thunder server and sample applications"
-        Write-Host "  build_backend            - Build the Thunder backend server"
+        Write-Host "  build                    - Build the complete Thunder application (backend + frontend + samples)"
+        Write-Host "  build_backend            - Build only the Thunder backend server"
+        Write-Host "  build_frontend           - Build only the Next.js frontend applications"
         Write-Host "  build_samples            - Build the sample applications"
         Write-Host "  test_unit                - Run unit tests with coverage"
         Write-Host "  test_integration         - Run integration tests"
         Write-Host "  merge_coverage           - Merge unit and integration test coverage reports"
         Write-Host "  test                     - Run all tests (unit and integration)"
-        Write-Host "  run                      - Run the Thunder server for development"
+        Write-Host "  run                      - Run the Thunder server for development (with automatic initial data setup)"
+        Write-Host "  run_backend              - Run the Thunder backend for development"
+        Write-Host "  run_frontend             - Run the Thunder frontend for development"
         exit 1
     }
 }

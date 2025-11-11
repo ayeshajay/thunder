@@ -21,45 +21,52 @@ package model
 
 // TokenRequest represents the OAuth2 token request.
 type TokenRequest struct {
-	GrantType    string `json:"grant_type"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	Scope        string `json:"scope,omitempty"`
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	CodeVerifier string `json:"code_verifier,omitempty"`
-	Code         string `json:"code,omitempty"`
-	RedirectURI  string `json:"redirect_uri,omitempty"`
+	GrantType          string `json:"grant_type"`
+	ClientID           string `json:"client_id"`
+	ClientSecret       string `json:"client_secret"`
+	Scope              string `json:"scope,omitempty"`
+	Username           string `json:"username,omitempty"`
+	Password           string `json:"password,omitempty"`
+	RefreshToken       string `json:"refresh_token,omitempty"`
+	CodeVerifier       string `json:"code_verifier,omitempty"`
+	Code               string `json:"code,omitempty"`
+	RedirectURI        string `json:"redirect_uri,omitempty"`
+	Resource           string `json:"resource,omitempty"`
+	SubjectToken       string `json:"subject_token,omitempty"`
+	SubjectTokenType   string `json:"subject_token_type,omitempty"`
+	ActorToken         string `json:"actor_token,omitempty"`
+	ActorTokenType     string `json:"actor_token_type,omitempty"`
+	RequestedTokenType string `json:"requested_token_type,omitempty"`
+	Audience           string `json:"audience,omitempty"`
 }
 
 // TokenResponse represents the OAuth2 token response.
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int64  `json:"expires_in"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	Scope        string `json:"scope,omitempty"`
-}
-
-// TokenContext holds context data for the token issuance.
-type TokenContext struct {
-	TokenAttributes map[string]interface{} `json:"token_attributes,omitempty"`
+	AccessToken     string `json:"access_token"`
+	TokenType       string `json:"token_type"`
+	ExpiresIn       int64  `json:"expires_in"`
+	RefreshToken    string `json:"refresh_token,omitempty"`
+	Scope           string `json:"scope,omitempty"`
+	IDToken         string `json:"id_token,omitempty"`
+	IssuedTokenType string `json:"issued_token_type,omitempty"`
 }
 
 // TokenDTO represents the data transfer object for tokens.
 type TokenDTO struct {
-	Token          string                 `json:"token"`
-	TokenType      string                 `json:"token_type"`
-	IssuedAt       int64                  `json:"issued_at"`
-	ExpiresIn      int64                  `json:"expires_in"`
-	Scopes         []string               `json:"scopes,omitempty"`
-	ClientID       string                 `json:"client_id"`
-	UserAttributes map[string]interface{} `json:"user_attributes,omitempty"`
+	Token          string
+	TokenType      string
+	IssuedAt       int64
+	ExpiresIn      int64
+	Scopes         []string
+	ClientID       string
+	UserAttributes map[string]interface{}
+	Subject        string
+	Audience       string
 }
 
 // TokenResponseDTO represents the data transfer object for token responses.
 type TokenResponseDTO struct {
-	AccessToken  TokenDTO `json:"access_token"`
-	RefreshToken TokenDTO `json:"refresh_token,omitempty"`
+	AccessToken  TokenDTO
+	RefreshToken TokenDTO
+	IDToken      TokenDTO
 }

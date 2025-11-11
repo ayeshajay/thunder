@@ -29,7 +29,7 @@ import (
 	"github.com/asgardeo/thunder/internal/system/error/serviceerror"
 	"github.com/asgardeo/thunder/internal/system/log"
 	"github.com/asgardeo/thunder/internal/system/utils"
-	userservice "github.com/asgardeo/thunder/internal/user/service"
+	"github.com/asgardeo/thunder/internal/user"
 )
 
 const loggerComponentName = "GroupMgtService"
@@ -44,19 +44,25 @@ type GroupServiceInterface interface {
 	UpdateGroup(groupID string, request UpdateGroupRequest) (*Group, *serviceerror.ServiceError)
 	DeleteGroup(groupID string) *serviceerror.ServiceError
 	GetGroupMembers(groupID string, limit, offset int) (*MemberListResponse, *serviceerror.ServiceError)
+	ValidateGroupIDs(groupIDs []string) *serviceerror.ServiceError
 }
 
 // groupService is the default implementation of the GroupServiceInterface.
 type groupService struct {
-	groupStore groupStoreInterface
-	ouService  oupkg.OrganizationUnitServiceInterface
+	groupStore  groupStoreInterface
+	ouService   oupkg.OrganizationUnitServiceInterface
+	userService user.UserServiceInterface
 }
 
 // newGroupService creates a new instance of GroupService with injected dependencies.
-func newGroupService(ouService oupkg.OrganizationUnitServiceInterface) GroupServiceInterface {
+func newGroupService(
+	ouService oupkg.OrganizationUnitServiceInterface,
+	userService user.UserServiceInterface,
+) GroupServiceInterface {
 	return &groupService{
-		groupStore: newGroupStore(),
-		ouService:  ouService,
+		groupStore:  newGroupStore(),
+		ouService:   ouService,
+		userService: userService,
 	}
 }
 
@@ -178,7 +184,7 @@ func (gs *groupService) CreateGroup(request CreateGroupRequest) (*Group, *servic
 		return nil, err
 	}
 
-	if err := gs.validateGroupIDs(groupIDs); err != nil {
+	if err := gs.ValidateGroupIDs(groupIDs); err != nil {
 		return nil, err
 	}
 
@@ -313,7 +319,7 @@ func (gs *groupService) UpdateGroup(
 		return nil, err
 	}
 
-	if err := gs.validateGroupIDs(groupIDs); err != nil {
+	if err := gs.ValidateGroupIDs(groupIDs); err != nil {
 		return nil, err
 	}
 
@@ -495,8 +501,7 @@ func (gs *groupService) validateOU(ouID string) *serviceerror.ServiceError {
 func (gs *groupService) validateUserIDs(userIDs []string) *serviceerror.ServiceError {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, loggerComponentName))
 
-	userService := userservice.GetUserService()
-	invalidUserIDs, svcErr := userService.ValidateUserIDs(userIDs)
+	invalidUserIDs, svcErr := gs.userService.ValidateUserIDs(userIDs)
 	if svcErr != nil {
 		logger.Error("Failed to validate user IDs", log.String("error", svcErr.Error), log.String("code", svcErr.Code))
 		return &ErrorInternalServerError
@@ -510,8 +515,8 @@ func (gs *groupService) validateUserIDs(userIDs []string) *serviceerror.ServiceE
 	return nil
 }
 
-// validateGroupIDs validates that all provided group IDs exist.
-func (gs *groupService) validateGroupIDs(groupIDs []string) *serviceerror.ServiceError {
+// ValidateGroupIDs validates that all provided group IDs exist.
+func (gs *groupService) ValidateGroupIDs(groupIDs []string) *serviceerror.ServiceError {
 	logger := log.GetLogger().With(log.String(log.LoggerKeyComponentName, loggerComponentName))
 
 	invalidGroupIDs, err := gs.groupStore.ValidateGroupIDs(groupIDs)
@@ -590,15 +595,17 @@ func buildPaginationLinks(base string, limit, offset, totalCount int) []Link {
 
 // validateAndProcessHandlePath validates and processes the handle path.
 func (gs *groupService) validateAndProcessHandlePath(handlePath string) *serviceerror.ServiceError {
-	if strings.TrimSpace(handlePath) == "" {
+	trimmedPath := strings.TrimSpace(handlePath)
+	if trimmedPath == "" {
 		return &ErrorInvalidRequestFormat
 	}
 
-	handles := strings.Split(strings.Trim(handlePath, "/"), "/")
-	if len(handles) == 0 {
+	trimmedPath = strings.Trim(trimmedPath, "/")
+	if trimmedPath == "" {
 		return &ErrorInvalidRequestFormat
 	}
 
+	handles := strings.Split(trimmedPath, "/")
 	for _, handle := range handles {
 		if strings.TrimSpace(handle) == "" {
 			return &ErrorInvalidRequestFormat

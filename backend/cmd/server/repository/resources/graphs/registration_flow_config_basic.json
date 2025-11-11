@@ -42,6 +42,10 @@
                     "required": true
                 }
             ],
+            "properties": {
+                "ouId": "<default-ou-id>",
+                "userType": "<default-user-type>"
+            },
             "executor": {
                 "name": "ProvisioningExecutor"
             },

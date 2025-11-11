@@ -107,26 +107,27 @@ func generateOAuth2Credential(credentialType OAuth2CredentialType) (string, erro
 }
 
 // GenerateOAuth2ClientID generates a URL-safe OAuth 2.0 client identifier.
-// Returns a base64url-encoded string (no padding) that is web-friendly and compliant
-// with OAuth 2.1 specifications for client identifier format.
-//
-// The generated client ID:
-// - Uses cryptographically secure random bytes
-// - Is URL-safe (base64url encoding without padding)
-// - Has sufficient entropy (128 bits) for uniqueness
-// - Results in a ~22 character string (more compact than UUID)
 func GenerateOAuth2ClientID() (string, error) {
 	return generateOAuth2Credential(ClientIDCredential)
 }
 
 // GenerateOAuth2ClientSecret generates a cryptographically secure OAuth 2.0 client secret.
-// Returns a base64url-encoded string with high entropy suitable for client authentication.
-//
-// The generated client secret:
-// - Uses cryptographically secure random bytes
-// - Has high entropy (256 bits) for security
-// - Is base64url-encoded for safe transport/storage
-// - Meets OAuth Security BCP (RFC 6819) recommendations
 func GenerateOAuth2ClientSecret() (string, error) {
 	return generateOAuth2Credential(ClientSecretCredential)
+}
+
+// SeparateOIDCAndNonOIDCScopes separates the given scopes into OIDC and non-OIDC scopes.
+func SeparateOIDCAndNonOIDCScopes(scopes string) ([]string, []string) {
+	scopeSlice := utils.ParseStringArray(scopes, " ")
+	var oidcScopes []string
+	var nonOidcScopes []string
+
+	for _, scp := range scopeSlice {
+		if _, exists := constants.StandardOIDCScopes[scp]; exists {
+			oidcScopes = append(oidcScopes, scp)
+		} else {
+			nonOidcScopes = append(nonOidcScopes, scp)
+		}
+	}
+	return oidcScopes, nonOidcScopes
 }

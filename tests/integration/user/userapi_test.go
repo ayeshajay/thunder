@@ -35,7 +35,46 @@ const (
 	testServerURL = "https://localhost:8095"
 )
 
+const (
+	groupMemberTypeUser = "user"
+)
+
+type groupMember struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+type groupCreateRequest struct {
+	Name               string        `json:"name"`
+	Description        string        `json:"description,omitempty"`
+	OrganizationUnitID string        `json:"organizationUnitId"`
+	Members            []groupMember `json:"members,omitempty"`
+}
+
+type groupCreateResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 var (
+	userSchema = testutils.UserSchema{
+		Name: "person",
+		Schema: map[string]interface{}{
+			"age": map[string]interface{}{"type": "number"},
+			"roles": map[string]interface{}{
+				"type":  "array",
+				"items": map[string]interface{}{"type": "string"},
+			},
+			"address": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"city": map[string]interface{}{"type": "string"},
+					"zip":  map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	}
+
 	testUser = testutils.User{
 		Type:       "person",
 		Attributes: json.RawMessage(`{"age": 25, "roles": ["viewer"], "address": {"city": "Seattle", "zip": "98101"}}`),
@@ -52,11 +91,18 @@ var (
 		Description: "Organization unit created for user API testing",
 		Parent:      nil,
 	}
+
+	testGroup = groupCreateRequest{
+		Name:        "User API Test Group",
+		Description: "Group created for validating user groups endpoint",
+	}
 )
 
 var (
-	createdUserID string
-	testOUID      string
+	createdUserID  string
+	testOUID       string
+	createdGroupID string
+	userSchemaID   string
 )
 
 type UserAPITestSuite struct {
@@ -77,6 +123,12 @@ func (ts *UserAPITestSuite) SetupSuite() {
 	}
 	testOUID = ouID
 
+	schemaID, err := testutils.CreateUserType(userSchema)
+	if err != nil {
+		ts.T().Fatalf("Failed to create user schema during setup: %v", err)
+	}
+	userSchemaID = schemaID
+
 	// Update user template with the created OU ID
 	testUser := testUser
 	testUser.OrganizationUnit = testOUID
@@ -87,10 +139,34 @@ func (ts *UserAPITestSuite) SetupSuite() {
 		ts.T().Fatalf("Failed to create user during setup: %v", err)
 	}
 	createdUserID = userID
+
+	// Create a group and add the created user as a member
+	groupToCreate := testGroup
+	groupToCreate.OrganizationUnitID = testOUID
+	groupToCreate.Members = []groupMember{
+		{
+			ID:   createdUserID,
+			Type: groupMemberTypeUser,
+		},
+	}
+
+	groupID, err := createGroup(groupToCreate)
+	if err != nil {
+		ts.T().Fatalf("Failed to create group during setup: %v", err)
+	}
+	createdGroupID = groupID
 }
 
 // TearDownSuite cleans up test user and organization unit
 func (ts *UserAPITestSuite) TearDownSuite() {
+	// Delete the test group
+	if createdGroupID != "" {
+		err := deleteGroup(createdGroupID)
+		if err != nil {
+			ts.T().Logf("Failed to delete group during teardown: %v", err)
+		}
+	}
+
 	// Delete the test user first
 	if createdUserID != "" {
 		err := deleteUser(createdUserID)
@@ -104,6 +180,12 @@ func (ts *UserAPITestSuite) TearDownSuite() {
 		err := deleteOrganizationUnit(testOUID)
 		if err != nil {
 			ts.T().Logf("Failed to delete organization unit during teardown: %v", err)
+		}
+	}
+
+	if userSchemaID != "" {
+		if err := testutils.DeleteUserType(userSchemaID); err != nil {
+			ts.T().Logf("Failed to delete user schema during teardown: %v", err)
 		}
 	}
 }
@@ -329,6 +411,114 @@ func (ts *UserAPITestSuite) TestUserUpdate() {
 	})
 }
 
+// Test user groups listing
+func (ts *UserAPITestSuite) TestUserGroupsListing() {
+
+	if createdUserID == "" {
+		ts.T().Fatal("user ID is not available for group listing")
+	}
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/users/%s/groups", testServerURL, createdUserID), nil)
+	if err != nil {
+		ts.T().Fatalf("Failed to create user groups request: %v", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		ts.T().Fatalf("Failed to send user groups request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		ts.T().Fatalf("Expected status 200, got %d. Response body: %s", resp.StatusCode, string(body))
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		ts.T().Fatalf("Failed to read user groups response: %v", err)
+	}
+
+	var groupListResponse UserGroupListResponse
+	err = json.Unmarshal(bodyBytes, &groupListResponse)
+	if err != nil {
+		ts.T().Fatalf("Failed to parse user groups response: %v. Raw body: %s", err, string(bodyBytes))
+	}
+
+	if groupListResponse.TotalResults < 1 {
+		ts.T().Fatalf("Expected at least one group for the user, got %d", groupListResponse.TotalResults)
+	}
+
+	if groupListResponse.StartIndex != 1 {
+		ts.T().Fatalf("Expected StartIndex 1, got %d", groupListResponse.StartIndex)
+	}
+
+	if groupListResponse.Count != len(groupListResponse.Groups) {
+		ts.T().Fatalf("Count field (%d) doesn't match groups length (%d)", groupListResponse.Count, len(groupListResponse.Groups))
+	}
+
+	var foundCreatedGroup bool
+	for _, group := range groupListResponse.Groups {
+		if group.ID == createdGroupID {
+			foundCreatedGroup = true
+			if group.Name != testGroup.Name {
+				ts.T().Fatalf("Expected group name %s, got %s", testGroup.Name, group.Name)
+			}
+			if group.OrganizationUnitID != "" && group.OrganizationUnitID != testOUID {
+				ts.T().Fatalf("Expected group OU %s, got %s", testOUID, group.OrganizationUnitID)
+			}
+			break
+		}
+	}
+
+	if !foundCreatedGroup {
+		ts.T().Fatalf("Expected to find group %s in user groups list", createdGroupID)
+	}
+}
+
+// Test user groups listing for non-existing user
+func (ts *UserAPITestSuite) TestUserGroupsListingNonExistingUser() {
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/users/%s/groups",
+		testServerURL, "00000000-0000-0000-0000-000000000999"), nil)
+	if err != nil {
+		ts.T().Fatalf("Failed to create request for non-existing user groups: %v", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		ts.T().Fatalf("Failed to send request for non-existing user groups: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		ts.T().Fatalf("Expected status 404 for non-existing user, got %d. Response body: %s", resp.StatusCode, string(body))
+	}
+
+	var errorResp testutils.ErrorResponse
+	err = json.NewDecoder(resp.Body).Decode(&errorResp)
+	if err != nil {
+		ts.T().Fatalf("Failed to parse error response: %v", err)
+	}
+
+	if errorResp.Code != "USR-1003" {
+		ts.T().Fatalf("Expected error code USR-1003, got %s", errorResp.Code)
+	}
+}
+
 func retrieveAndValidateUserDetails(ts *UserAPITestSuite, expectedUser testutils.User) {
 
 	req, err := http.NewRequest("GET", testServerURL+"/users/"+expectedUser.ID, nil)
@@ -500,5 +690,74 @@ func deleteOrganizationUnit(ouID string) error {
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("expected status 200 or 204, got %d", resp.StatusCode)
 	}
+	return nil
+}
+
+func createGroup(groupReq groupCreateRequest) (string, error) {
+	groupJSON, err := json.Marshal(groupReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal group request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", testServerURL+"/groups", bytes.NewReader(groupJSON))
+	if err != nil {
+		return "", fmt.Errorf("failed to create group request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send group create request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("expected status 201 for group creation, got %d. Response: %s",
+			resp.StatusCode, string(bodyBytes))
+	}
+
+	var created groupCreateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		return "", fmt.Errorf("failed to parse group creation response: %w", err)
+	}
+
+	if created.ID == "" {
+		return "", fmt.Errorf("group creation response does not contain id")
+	}
+
+	return created.ID, nil
+}
+
+func deleteGroup(groupID string) error {
+	req, err := http.NewRequest("DELETE", testServerURL+"/groups/"+groupID, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create group delete request: %w", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send group delete request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("expected status 204 for group deletion, got %d. Response: %s",
+			resp.StatusCode, string(bodyBytes))
+	}
+
 	return nil
 }

@@ -39,6 +39,24 @@ const (
 	testMobileNumber           = "+1234567890"
 )
 
+var smsOTPUserSchema = testutils.UserSchema{
+	Name: "smsotp_user",
+	Schema: map[string]interface{}{
+		"username": map[string]interface{}{
+			"type": "string",
+		},
+		"password": map[string]interface{}{
+			"type": "string",
+		},
+		"email": map[string]interface{}{
+			"type": "string",
+		},
+		"mobileNumber": map[string]interface{}{
+			"type": "string",
+		},
+	},
+}
+
 type SMSOTPAuthTestSuite struct {
 	suite.Suite
 	mockServer   *testutils.MockNotificationServer
@@ -46,6 +64,7 @@ type SMSOTPAuthTestSuite struct {
 	senderID     string
 	userID       string
 	mobileNumber string
+	userSchemaID string
 }
 
 func TestSMSOTPAuthTestSuite(t *testing.T) {
@@ -93,6 +112,10 @@ func (suite *SMSOTPAuthTestSuite) SetupSuite() {
 	suite.Require().NoError(err, "Failed to create notification sender")
 	suite.senderID = senderID
 
+	schemaID, err := testutils.CreateUserType(smsOTPUserSchema)
+	suite.Require().NoError(err, "Failed to create SMS OTP user schema")
+	suite.userSchemaID = schemaID
+
 	userAttributes := map[string]interface{}{
 		"username":     "smsotp_user",
 		"password":     "Test@1234",
@@ -103,7 +126,7 @@ func (suite *SMSOTPAuthTestSuite) SetupSuite() {
 	suite.Require().NoError(err)
 
 	user := testutils.User{
-		Type:             "person",
+		Type:             smsOTPUserSchema.Name,
 		OrganizationUnit: "1234-abcd-5678-efgh",
 		Attributes:       userAttributesJSON,
 	}
@@ -119,6 +142,10 @@ func (suite *SMSOTPAuthTestSuite) TearDownSuite() {
 
 	if suite.senderID != "" {
 		_ = suite.deleteNotificationSender(suite.senderID)
+	}
+
+	if suite.userSchemaID != "" {
+		_ = testutils.DeleteUserType(suite.userSchemaID)
 	}
 
 	if suite.mockServer != nil {
@@ -263,6 +290,7 @@ func (suite *SMSOTPAuthTestSuite) TestVerifyOTPSuccess() {
 	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
 	suite.NotEmpty(authResponse.Type, "Response should contain user type")
 	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
 }
 
 func (suite *SMSOTPAuthTestSuite) TestVerifyOTPInvalidCode() {
@@ -414,6 +442,204 @@ func (suite *SMSOTPAuthTestSuite) TestCompleteOTPAuthFlow() {
 	suite.Contains(authResponse, "type")
 	suite.Contains(authResponse, "organization_unit")
 	suite.Equal(suite.userID, authResponse["id"])
+}
+
+// TestVerifyOTPWithSkipAssertionFalse tests OTP verification with skip_assertion explicitly set to false
+func (suite *SMSOTPAuthTestSuite) TestVerifyOTPWithSkipAssertionFalse() {
+	sessionToken, otp := suite.sendOTPAndExtract()
+
+	verifyRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"otp":            otp,
+		"skip_assertion": false,
+	}
+	verifyRequestJSON, err := json.Marshal(verifyRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+smsOTPAuthVerifyEndpoint, bytes.NewReader(verifyRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := suite.client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token when skip_assertion is false")
+}
+
+// TestVerifyOTPWithSkipAssertionTrue tests OTP verification with skip_assertion set to true
+func (suite *SMSOTPAuthTestSuite) TestVerifyOTPWithSkipAssertionTrue() {
+	sessionToken, otp := suite.sendOTPAndExtract()
+
+	verifyRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"otp":            otp,
+		"skip_assertion": true,
+	}
+	verifyRequestJSON, err := json.Marshal(verifyRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+smsOTPAuthVerifyEndpoint, bytes.NewReader(verifyRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := suite.client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.ID, "Response should contain user ID")
+	suite.Equal(suite.userID, authResponse.ID, "Response should contain the correct user ID")
+	suite.NotEmpty(authResponse.Type, "Response should contain user type")
+	suite.NotEmpty(authResponse.OrganizationUnit, "Response should contain organization unit")
+	suite.Empty(authResponse.Assertion, "Response should not contain assertion token when skip_assertion is true")
+}
+
+// TestSMSOTPVerifyWithAssuranceLevelAAL1 tests that SMS OTP alone generates AAL1 assurance level
+func (suite *SMSOTPAuthTestSuite) TestSMSOTPVerifyWithAssuranceLevelAAL1() {
+	sessionToken, otp := suite.sendOTPAndExtract()
+
+	verifyRequest := map[string]interface{}{
+		"session_token": sessionToken,
+		"otp":           otp,
+	}
+	verifyRequestJSON, err := json.Marshal(verifyRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+smsOTPAuthVerifyEndpoint, bytes.NewReader(verifyRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := suite.client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(authResponse.Assertion, "Response should contain assertion token by default")
+
+	// Verify assertion contains AAL1 for SMS OTP alone (no prior authentication)
+	aal := extractAssuranceLevelFromAssertion(authResponse.Assertion, "aal")
+	suite.NotEmpty(aal, "Assertion should contain AAL information")
+	suite.Equal("AAL1", aal, "Single-factor SMS OTP authentication should result in AAL1")
+
+	// Verify IAL is present
+	ial := extractAssuranceLevelFromAssertion(authResponse.Assertion, "ial")
+	suite.NotEmpty(ial, "Assertion should contain IAL information")
+	suite.Equal("IAL1", ial, "Self-asserted identity should result in IAL1")
+}
+
+// TestSMSOTPNoAssertionGeneration tests that AAL/IAL are not present when assertion is skipped
+func (suite *SMSOTPAuthTestSuite) TestSMSOTPNoAssertionGeneration() {
+	sessionToken, otp := suite.sendOTPAndExtract()
+
+	verifyRequest := map[string]interface{}{
+		"session_token":  sessionToken,
+		"otp":            otp,
+		"skip_assertion": true,
+	}
+	verifyRequestJSON, err := json.Marshal(verifyRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+smsOTPAuthVerifyEndpoint, bytes.NewReader(verifyRequestJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := suite.client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode)
+
+	var authResponse testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&authResponse)
+	suite.Require().NoError(err)
+
+	suite.Empty(authResponse.Assertion, "Response should not contain assertion when skip_assertion is true")
+}
+
+// TestSMSOTPWithCredentialsMultiFactorAAL2 tests that credentials + SMS OTP generates AAL2
+// This test demonstrates multi-factor authentication flow
+func (suite *SMSOTPAuthTestSuite) TestSMSOTPWithCredentialsMultiFactorAAL2() {
+	// First, authenticate with credentials (get assertion for first factor)
+	credentialsRequest := map[string]interface{}{
+		"username": "smsotp_user",
+		"password": "Test@1234",
+	}
+	credJSON, err := json.Marshal(credentialsRequest)
+	suite.Require().NoError(err)
+
+	req, err := http.NewRequest("POST", testServerURL+credentialsAuthEndpoint, bytes.NewReader(credJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := suite.client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode, "Credentials authentication should succeed")
+
+	var credResp testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&credResp)
+	suite.Require().NoError(err)
+	suite.NotEmpty(credResp.ID, "Should get user ID from credentials auth")
+	suite.NotEmpty(credResp.Assertion, "Should get assertion from first factor")
+
+	// Then, authenticate with SMS OTP (second factor), passing the assertion from first factor
+	sessionToken, otp := suite.sendOTPAndExtract()
+
+	verifyRequest := map[string]interface{}{
+		"session_token": sessionToken,
+		"otp":           otp,
+		"assertion":     credResp.Assertion,
+	}
+	verifyJSON, err := json.Marshal(verifyRequest)
+	suite.Require().NoError(err)
+
+	req, err = http.NewRequest("POST", testServerURL+smsOTPAuthVerifyEndpoint, bytes.NewReader(verifyJSON))
+	suite.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err = suite.client.Do(req)
+	suite.Require().NoError(err)
+	defer resp.Body.Close()
+
+	suite.Equal(http.StatusOK, resp.StatusCode, "SMS OTP verification should succeed")
+
+	var otpResp testutils.AuthenticationResponse
+	err = json.NewDecoder(resp.Body).Decode(&otpResp)
+	suite.Require().NoError(err)
+
+	suite.NotEmpty(otpResp.Assertion, "Response should contain assertion after MFA")
+
+	// Verify assertion contains AAL2 for multi-factor authentication
+	aal := extractAssuranceLevelFromAssertion(otpResp.Assertion, "aal")
+	suite.NotEmpty(aal, "Assertion should contain AAL information")
+	suite.Equal("AAL2", aal, "Multi-factor authentication (credentials + SMS OTP) should result in AAL2")
+
+	// Verify IAL is present
+	ial := extractAssuranceLevelFromAssertion(otpResp.Assertion, "ial")
+	suite.NotEmpty(ial, "Assertion should contain IAL information")
+	suite.Equal("IAL1", ial, "Self-asserted identity should result in IAL1")
 }
 
 func (suite *SMSOTPAuthTestSuite) sendOTPAndExtract() (string, string) {
