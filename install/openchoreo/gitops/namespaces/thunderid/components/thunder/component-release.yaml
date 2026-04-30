@@ -1,0 +1,514 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: ComponentRelease
+metadata:
+  name: thunder
+  namespace: thunderid
+spec:
+  componentProfile:
+    parameters:
+      image: ghcr.io/asgardeo/thunder:latest
+      runtime:
+        console:
+          clientBase: /console
+          clientId: CONSOLE
+          scopes: '["openid", "profile", "email", "system"]'
+        dbStorageSize: 1Gi
+        dbType: sqlite
+        gate:
+          clientBase: /gate
+        imagePullPolicy: Always
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/thunder
+    spec:
+      environmentConfigs:
+        openAPIV3Schema:
+          properties:
+            consoleRedirectUris:
+              default: '["http://localhost:8090/console"]'
+              type: string
+            endpointVisibility:
+              default: external
+              enum:
+              - external
+              - internal
+              type: string
+            gateClientHostname:
+              default: ""
+              type: string
+            replicas:
+              default: 1
+              type: integer
+            resourceLimitsCpu:
+              default: 500m
+              type: string
+            resourceLimitsMemory:
+              default: 512Mi
+              type: string
+            resourceRequestsCpu:
+              default: 100m
+              type: string
+            resourceRequestsMemory:
+              default: 128Mi
+              type: string
+            serverPublicUrl:
+              default: ""
+              type: string
+          type: object
+      parameters:
+        openAPIV3Schema:
+          properties:
+            image:
+              default: ghcr.io/asgardeo/thunder:latest
+              type: string
+            runtime:
+              properties:
+                console:
+                  properties:
+                    clientBase:
+                      default: /console
+                      type: string
+                    clientId:
+                      default: CONSOLE
+                      type: string
+                    scopes:
+                      default: '["openid", "profile", "email", "system"]'
+                      type: string
+                  type: object
+                dbStorageSize:
+                  default: 1Gi
+                  type: string
+                dbType:
+                  default: sqlite
+                  enum:
+                  - sqlite
+                  - postgres
+                  type: string
+                gate:
+                  properties:
+                    clientBase:
+                      default: /gate
+                      type: string
+                  type: object
+                imagePullPolicy:
+                  default: Always
+                  enum:
+                  - Always
+                  - IfNotPresent
+                  - Never
+                  type: string
+              type: object
+          type: object
+      resources:
+      - id: sqlite-pvc
+        template:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ${metadata.componentName}-sqlite
+            namespace: ${metadata.namespace}
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: ${parameters.runtime.dbStorageSize}
+      - id: thunder-config
+        includeWhen: ${parameters.runtime.dbType == 'sqlite'}
+        template:
+          apiVersion: v1
+          data:
+            deployment.yaml: |
+              server:
+                hostname: "0.0.0.0"
+                public_url: "${environmentConfigs.serverPublicUrl}"
+                port: ${workload.endpoints["api"].port}
+                http_only: true
+
+              gate_client:
+                hostname: "${environmentConfigs.gateClientHostname}"
+                port: {{.GATE_CLIENT_PORT}}
+                scheme: "{{.GATE_CLIENT_SCHEME}}"
+
+              crypto:
+                encryption:
+                  key: "{{.CRYPTO_ENCRYPTION_KEY}}"
+
+              database:
+                config:
+                  type: "sqlite"
+                  sqlite:
+                    path: "{{.DB_CONFIG_PATH}}"
+                runtime:
+                  type: "sqlite"
+                  sqlite:
+                    path: "{{.DB_RUNTIME_PATH}}"
+                user:
+                  type: "sqlite"
+                  sqlite:
+                    path: "{{.DB_USER_PATH}}"
+
+              cache:
+                disabled: false
+                type: "inmemory"
+                size: {{.CACHE_SIZE}}
+                ttl: {{.CACHE_TTL}}
+                eviction_policy: "LRU"
+                cleanup_interval: 600
+
+              jwt:
+                validity_period: {{.JWT_VALIDITY}}
+
+              oauth:
+                refresh_token:
+                  renew_on_grant: true
+                  validity_period: {{.OAUTH_REFRESH_TOKEN_VALIDITY}}
+
+              flow:
+                max_version_history: 3
+                auto_infer_registration: true
+
+              cors:
+                allowed_origins: {{.CORS_ALLOWED_ORIGINS}}
+
+              consent:
+                enabled: {{.CONSENT_ENABLED}}
+                base_url: "{{.CONSENT_BASE_URL}}"
+          kind: ConfigMap
+          metadata:
+            name: ${metadata.componentName}-config
+            namespace: ${metadata.namespace}
+      - id: thunder-config-pg
+        includeWhen: ${parameters.runtime.dbType == 'postgres'}
+        template:
+          apiVersion: v1
+          data:
+            deployment.yaml: |
+              server:
+                hostname: "0.0.0.0"
+                public_url: "${environmentConfigs.serverPublicUrl}"
+                port: ${workload.endpoints["api"].port}
+                http_only: true
+
+              gate_client:
+                hostname: "${environmentConfigs.gateClientHostname}"
+                port: {{.GATE_CLIENT_PORT}}
+                scheme: "{{.GATE_CLIENT_SCHEME}}"
+
+              crypto:
+                encryption:
+                  key: "{{.CRYPTO_ENCRYPTION_KEY}}"
+
+              database:
+                config:
+                  type: "postgres"
+                  postgres:
+                    hostname: "{{.DB_CONFIG_HOSTNAME}}"
+                    port: {{.DB_PORT}}
+                    name: "{{.DB_CONFIG_NAME}}"
+                    username: "{{.DB_CONFIG_USERNAME}}"
+                    password: "{{.DB_CONFIG_PASSWORD}}"
+                    sslmode: "{{.DB_CONFIG_SSLMODE}}"
+                runtime:
+                  type: "postgres"
+                  postgres:
+                    hostname: "{{.DB_RUNTIME_HOSTNAME}}"
+                    port: {{.DB_PORT}}
+                    name: "{{.DB_RUNTIME_NAME}}"
+                    username: "{{.DB_RUNTIME_USERNAME}}"
+                    password: "{{.DB_RUNTIME_PASSWORD}}"
+                    sslmode: "{{.DB_RUNTIME_SSLMODE}}"
+                user:
+                  type: "postgres"
+                  postgres:
+                    hostname: "{{.DB_USER_HOSTNAME}}"
+                    port: {{.DB_PORT}}
+                    name: "{{.DB_USER_NAME}}"
+                    username: "{{.DB_USER_USERNAME}}"
+                    password: "{{.DB_USER_PASSWORD}}"
+                    sslmode: "{{.DB_USER_SSLMODE}}"
+
+              cache:
+                disabled: false
+                type: "inmemory"
+                size: {{.CACHE_SIZE}}
+                ttl: {{.CACHE_TTL}}
+                eviction_policy: "LRU"
+                cleanup_interval: 600
+
+              jwt:
+                validity_period: {{.JWT_VALIDITY}}
+
+              oauth:
+                refresh_token:
+                  renew_on_grant: true
+                  validity_period: {{.OAUTH_REFRESH_TOKEN_VALIDITY}}
+
+              flow:
+                max_version_history: 3
+                auto_infer_registration: true
+
+              cors:
+                allowed_origins: {{.CORS_ALLOWED_ORIGINS}}
+
+              consent:
+                enabled: {{.CONSENT_ENABLED}}
+                base_url: "{{.CONSENT_BASE_URL}}"
+          kind: ConfigMap
+          metadata:
+            name: ${metadata.componentName}-config
+            namespace: ${metadata.namespace}
+      - id: gate-config
+        template:
+          apiVersion: v1
+          data:
+            config.js: |
+              window.__THUNDER_RUNTIME_CONFIG__ = {
+                brand: {
+                  product_name: 'Thunder',
+                },
+                client: {
+                  base: "${parameters.runtime.gate.clientBase}",
+                },
+                server: {
+                  public_url: "${environmentConfigs.serverPublicUrl}",
+                },
+              };
+          kind: ConfigMap
+          metadata:
+            name: ${metadata.componentName}-gate-config
+            namespace: ${metadata.namespace}
+      - id: console-config
+        template:
+          apiVersion: v1
+          data:
+            config.js: |
+              window.__THUNDER_RUNTIME_CONFIG__ = {
+                brand: {
+                  product_name: 'Thunder',
+                },
+                client: {
+                  base: "${parameters.runtime.console.clientBase}",
+                  client_id: "${parameters.runtime.console.clientId}",
+                  scopes: ${parameters.runtime.console.scopes},
+                },
+                server: {
+                  public_url: "${environmentConfigs.serverPublicUrl}",
+                },
+              };
+          kind: ConfigMap
+          metadata:
+            name: ${metadata.componentName}-console-config
+            namespace: ${metadata.namespace}
+      - forEach: ${configurations.toConfigFileList()}
+        id: file-config
+        template:
+          apiVersion: v1
+          data:
+            ${config.name}: |
+              ${config.value}
+          kind: ConfigMap
+          metadata:
+            name: ${config.resourceName}
+            namespace: ${metadata.namespace}
+        var: config
+      - id: deployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${metadata.componentName}
+            namespace: ${metadata.namespace}
+          spec:
+            replicas: ${environmentConfigs.replicas}
+            selector:
+              matchLabels:
+                app: ${metadata.componentName}
+            template:
+              metadata:
+                labels:
+                  app: ${metadata.componentName}
+              spec:
+                containers:
+                - command:
+                  - /opt/thunder/thunder
+                  env: |
+                    ${configurations.configs.envs.map(e, {"name": e.name, "value": e.value}) + [
+                      {"name": "CONSOLE_REDIRECT_URIS_0", "value": environmentConfigs.consoleRedirectUris}
+                    ]}
+                  image: ${parameters.image}
+                  imagePullPolicy: ${parameters.runtime.imagePullPolicy}
+                  name: thunder
+                  ports:
+                  - containerPort: ${workload.endpoints["api"].port}
+                  resources:
+                    limits:
+                      cpu: ${environmentConfigs.resourceLimitsCpu}
+                      memory: ${environmentConfigs.resourceLimitsMemory}
+                    requests:
+                      cpu: ${environmentConfigs.resourceRequestsCpu}
+                      memory: ${environmentConfigs.resourceRequestsMemory}
+                  volumeMounts: |
+                    ${[
+                      {"name": "thunder-config", "mountPath": "/opt/thunder/repository/conf/deployment.yaml", "subPath": "deployment.yaml"},
+                      {"name": "gate-config", "mountPath": "/opt/thunder/apps/gate/config.js", "subPath": "config.js"},
+                      {"name": "console-config", "mountPath": "/opt/thunder/apps/console/config.js", "subPath": "config.js"},
+                      {"name": "sqlite-data", "mountPath": "/opt/thunder/repository/database"}
+                    ] + configurations.toContainerVolumeMounts().map(m, {"name": m.name, "mountPath": m.mountPath, "subPath": m.subPath})}
+                initContainers:
+                - args:
+                  - |
+                    if [ ! -f /data/.initialized ]; then
+                      echo "Copying database directory from image..."
+                      cp -r /opt/thunder/repository/database/* /data/
+                      touch /data/.initialized
+                      echo "Database initialization complete"
+                    else
+                      echo "Database already initialized"
+                    fi
+                  command:
+                  - sh
+                  - -c
+                  image: ${parameters.image}
+                  imagePullPolicy: ${parameters.runtime.imagePullPolicy}
+                  name: init-database
+                  volumeMounts:
+                  - mountPath: /data
+                    name: sqlite-data
+                volumes: |
+                  ${[
+                    {"name": "thunder-config", "configMap": {"name": metadata.componentName + "-config"}},
+                    {"name": "gate-config", "configMap": {"name": metadata.componentName + "-gate-config"}},
+                    {"name": "console-config", "configMap": {"name": metadata.componentName + "-console-config"}},
+                    {"name": "sqlite-data", "persistentVolumeClaim": {"claimName": metadata.componentName + "-sqlite"}}
+                  ] + configurations.toVolumes().map(v, {"name": v.name, "configMap": {"name": v.configMap.name}})}
+      - id: service
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${metadata.componentName}
+            namespace: ${metadata.namespace}
+          spec:
+            ports:
+            - name: http
+              port: ${workload.endpoints["api"].port}
+              protocol: TCP
+              targetPort: ${workload.endpoints["api"].port}
+            selector:
+              app: ${metadata.componentName}
+            type: ClusterIP
+      - forEach: ${workload.endpoints.transformMap(name, ep, ep.type in ["HTTP", "GraphQL",
+          "Websocket"], ep)}
+        id: httproute-external
+        includeWhen: ${environmentConfigs.endpointVisibility == 'external'}
+        template:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            labels: '${oc_merge(metadata.labels, {"openchoreo.dev/endpoint-name":
+              endpoint.key, "openchoreo.dev/endpoint-visibility": "external"})}'
+            name: ${oc_generate_name(metadata.componentName, endpoint.key)}
+            namespace: ${metadata.namespace}
+          spec:
+            hostnames: |
+              ${[gateway.ingress.external.?http, gateway.ingress.external.?https]
+                .filter(g, g.hasValue()).map(g, g.value().host).distinct()
+                .map(h, metadata.environmentName + "-" + metadata.componentName + "-" + metadata.componentNamespace + "." + h)}
+            parentRefs:
+            - name: ${gateway.ingress.external.name}
+              namespace: ${gateway.ingress.external.namespace}
+            rules:
+            - backendRefs:
+              - name: ${metadata.componentName}
+                port: ${endpoint.value.port}
+              filters:
+              - type: URLRewrite
+                urlRewrite:
+                  path:
+                    replacePrefixMatch: ${endpoint.value.?basePath.orValue("/")}
+                    type: ReplacePrefixMatch
+              matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+        var: endpoint
+      workloadType: deployment
+  owner:
+    componentName: thunder
+    projectName: identity-platform
+  workload:
+    container:
+      env:
+      - key: SERVER_PORT
+        value: "8090"
+      - key: JWT_VALIDITY
+        value: "3600"
+      - key: OAUTH_REFRESH_TOKEN_VALIDITY
+        value: "86400"
+      - key: CACHE_SIZE
+        value: "10000"
+      - key: CACHE_TTL
+        value: "3600"
+      - key: CONSENT_ENABLED
+        value: "false"
+      - key: CONSENT_BASE_URL
+        value: http://localhost:9090/api/v1
+      - key: GATE_CLIENT_BASE
+        value: /gate
+      - key: CONSOLE_CLIENT_BASE
+        value: /console
+      - key: CONSOLE_CLIENT_ID
+        value: CONSOLE
+      - key: CONSOLE_SCOPES
+        value: '["openid", "profile", "email", "system"]'
+      - key: CORS_ALLOWED_ORIGINS
+        value: '["http://development-thunder-thunderid.openchoreoapis.localhost:19080",
+          "https://localhost:3000"]'
+      - key: GATE_CLIENT_PORT
+        value: "19080"
+      - key: GATE_CLIENT_SCHEME
+        value: http
+      - key: DB_CONFIG_PATH
+        value: repository/database/configdb.db
+      - key: DB_RUNTIME_PATH
+        value: repository/database/runtimedb.db
+      - key: DB_USER_PATH
+        value: repository/database/userdb.db
+      - key: CRYPTO_ENCRYPTION_KEY
+        value: file://repository/resources/security/crypto.key
+      files:
+      - key: Console.yaml
+        mountPath: /opt/thunder/repository/resources/applications
+        value: "id: 019ddcf3-c9ce-7f77-8cce-ca2d2f9e81d2\nou_id: 019ddcf3-c5d8-7375-80e3-c5bf524257c8\nname:
+          Console\ndescription: Management application for Thunder\nauth_flow_id:
+          019ddcf3-c92c-7ab5-8b98-207fe7c6f117\nregistration_flow_id: 019ddcf3-c92d-7737-b491-babe674edf62\nurl:
+          https://localhost:8090/console\nlogo_url: emoji:\U0001F468‍\U0001F4BB\nassertion:\n
+          \ validity_period: 3600\ninbound_auth_config:\n  - type: oauth2\n    config:\n
+          \     client_id: {{.CONSOLE_CLIENT_ID}}\n      redirect_uris:\n        {{-
+          range .CONSOLE_REDIRECT_URIS}}\n        - {{.}}\n        {{- end}}\n      grant_types:\n
+          \       - authorization_code\n        - refresh_token\n      response_types:\n
+          \       - code\n      token_endpoint_auth_method: none\n      pkce_required:
+          true\n      public_client: true\n      require_pushed_authorization_requests:
+          false\n      token:\n        access_token:\n          validity_period: 3600\n
+          \         user_attributes:\n            - given_name\n            - family_name\n
+          \           - email\n            - groups\n            - name\n            -
+          ouId\n        id_token:\n          validity_period: 3600\n          user_attributes:\n
+          \           - given_name\n            - family_name\n            - email\n
+          \           - groups\n            - name\n            - ouId\n      user_info:\n
+          \       response_type: JSON\n        user_attributes:\n          - given_name\n
+          \         - family_name\n          - email\n          - groups\n          -
+          name\n          - ouId\n      scope_claims:\n        group:\n          -
+          groups\n        ou:\n          - ouId\n        phone:\n          - phone_number\n
+          \         - phone_number_verified\n        profile:\n          - name\n
+          \         - given_name\n          - family_name\n          - picture\n        email:\n
+          \         - email\n          - email_verified\nallowed_user_types:\n  -
+          Person\nlogin_consent:\n  validity_period: 0\n"
+      image: ghcr.io/asgardeo/thunder:latest
+    endpoints:
+      api:
+        displayName: Thunder API
+        port: 8090
+        type: HTTP
+        visibility:
+        - external

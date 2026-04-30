@@ -1,0 +1,22 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: ReleaseBinding
+metadata:
+  name: thunder-prod
+  namespace: thunderid
+spec:
+  owner:
+    componentName: thunder
+    projectName: identity-platform
+  environment: production
+  releaseName: thunder
+  state: Active
+  componentTypeEnvironmentConfigs:
+    replicas: 3
+    endpointVisibility: "external"
+    serverPublicUrl: "http://production-thunder-thunderid.openchoreoapis.localhost:19080"
+    gateClientHostname: "production-thunder-thunderid.openchoreoapis.localhost"
+    consoleRedirectUris: "http://production-thunder-thunderid.openchoreoapis.localhost:19080/console"
+    resourceRequestsCpu: "500m"
+    resourceRequestsMemory: "512Mi"
+    resourceLimitsCpu: "1000m"
+    resourceLimitsMemory: "1Gi"

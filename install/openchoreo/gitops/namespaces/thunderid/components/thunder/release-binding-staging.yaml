@@ -1,0 +1,22 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: ReleaseBinding
+metadata:
+  name: thunder-staging
+  namespace: thunderid
+spec:
+  owner:
+    componentName: thunder
+    projectName: identity-platform
+  environment: staging
+  releaseName: thunder
+  state: Active
+  componentTypeEnvironmentConfigs:
+    replicas: 1
+    endpointVisibility: "external"
+    serverPublicUrl: "http://staging-thunder-thunderid.openchoreoapis.localhost:19080"
+    gateClientHostname: "staging-thunder-thunderid.openchoreoapis.localhost"
+    consoleRedirectUris: "http://staging-thunder-thunderid.openchoreoapis.localhost:19080/console"
+    resourceRequestsCpu: "100m"
+    resourceRequestsMemory: "128Mi"
+    resourceLimitsCpu: "500m"
+    resourceLimitsMemory: "512Mi"
